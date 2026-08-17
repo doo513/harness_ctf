@@ -134,11 +134,12 @@ def test_remote_tcp_runner_requires_admission_and_network_authority() -> None:
         )
 
 
-def test_remote_tcp_runner_rejects_credentials_embedded_in_endpoint() -> None:
-    endpoint = "tcp://user:secret@127.0.0.1:31337"
-    target = RemoteTargetSpec(endpoint=endpoint, transport=RemoteTransport.TCP)
-    with pytest.raises(ValueError, match="must not contain credentials"):
-        RemoteTcpRunner(_challenge(endpoint), target, network_policy=_network())
+def test_remote_tcp_runner_never_receives_credential_bearing_endpoint() -> None:
+    with pytest.raises(ValueError, match="embedded credentials"):
+        RemoteTargetSpec(
+            endpoint="tcp://user:secret@127.0.0.1:31337",
+            transport=RemoteTransport.TCP,
+        )
 
 
 def test_remote_tcp_runner_descriptor_exposes_only_credential_presence() -> None:
