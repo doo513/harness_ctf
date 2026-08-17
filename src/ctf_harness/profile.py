@@ -6,6 +6,7 @@ from ctf_harness.claims.pwn import PWN_CLAIM_SPECS
 from ctf_harness.domains.pwn import PwnPlaybook
 from ctf_harness.domains.registry import DomainRegistry
 from ctf_harness.progress.pwn import pwn_progress_snapshot
+from ctf_harness.sandbox import AnalysisSandbox
 from ctf_harness.target.runners import NativeRunner, TargetRunner
 from ctf_harness.tools.recon import make_pwn_recon_handler
 from ctf_harness.tools.crash import make_crash_probe_tool
@@ -36,6 +37,7 @@ class VerifiedCTFProfile(CTFProfile):
         expected_target_sha256: dict[str, str] | None = None,
         domain_registry: DomainRegistry | None = None,
         active_domains: tuple[str, ...] = ("pwn",),
+        analysis_sandbox: AnalysisSandbox | None = None,
     ):
         super().__init__(workspace=workspace, external_oracle=external_oracle, execution_backend=execution_backend)
         self.flag_completion_oracle = flag_completion_oracle
@@ -64,6 +66,10 @@ class VerifiedCTFProfile(CTFProfile):
             registry.require(domain)
         self.domain_registry = registry
         self.active_domains = active_domains
+
+        if analysis_sandbox is not None and not isinstance(analysis_sandbox, AnalysisSandbox):
+            raise ValueError("analysis_sandbox must be AnalysisSandbox when provided")
+        self.analysis_sandbox = analysis_sandbox
 
     def tools(self):
         tools = super().tools()
@@ -100,6 +106,8 @@ class VerifiedCTFProfile(CTFProfile):
             failure_modes=["invalid_path", "non_elf", "truncated_elf"],
             provenance={"kind":"deterministic_domain_probe", "domain":"pwn", "schema":"pwn_recon_snapshot.v1"},
         )
+        if self.analysis_sandbox is not None:
+            tools["analysis_exec"] = self.analysis_sandbox.tool()
         return tools
 
     def verifiers(self):
