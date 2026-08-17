@@ -76,6 +76,8 @@ jobs:
           exit 1
       - name: Controlled Agent foundation probe
         run: python scripts/agent_foundation_probe.py
+      - name: Live minimal SolveEngine vertical probe
+        run: sudo -E "$(command -v python)" scripts/solve_engine_probe.py
       - name: Live Pwn crash semantic probe
         run: sudo -E "$(command -v python)" scripts/pwn_crash_semantic_probe.py
       - name: Controlled QEMU AArch64 crash runner probe
