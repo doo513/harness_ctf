@@ -29,10 +29,13 @@ jobs:
       - name: Install Pwn engineering probe tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gdb
+          sudo apt-get install -y --no-install-recommends gdb qemu-user-static
           echo "gdb_path=$(command -v gdb)"
           dpkg-query -W -f='gdb_version=${Version}\n' gdb
           gdb --version | head -n 1
+          echo "qemu_aarch64_path=$(command -v qemu-aarch64-static)"
+          dpkg-query -W -f='qemu_user_static_version=${Version}\n' qemu-user-static
+          qemu-aarch64-static --version | head -n 1
       - name: Compile
         run: python -m compileall -q src tests scripts third_party/base_harness/src third_party/base_harness/tests third_party/base_harness/scripts
       - name: Base regression
@@ -73,6 +76,8 @@ jobs:
           exit 1
       - name: Live Pwn crash semantic probe
         run: sudo -E "$(command -v python)" scripts/pwn_crash_semantic_probe.py
+      - name: Controlled QEMU AArch64 crash runner probe
+        run: sudo -E "$(command -v python)" scripts/target_runner_qemu_probe.py
       - name: Live Pwn x86_64 control-flow semantic probe
         run: sudo -E "$(command -v python)" scripts/pwn_control_semantic_probe.py
       - name: Live Pwn local-proof semantic probe
