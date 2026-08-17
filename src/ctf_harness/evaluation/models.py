@@ -20,6 +20,15 @@ class BenchmarkArm(str, Enum):
     VERIFIED = "verified_ctf_harness"
 
 
+def _lower_sha256(value: str, *, field_name: str) -> None:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(ch not in "0123456789abcdef" for ch in value)
+    ):
+        raise ValueError(f"{field_name} must be lowercase SHA-256 hex")
+
+
 @dataclass(frozen=True)
 class ArmConfig:
     """Only experimental CTF feature toggles may differ across A/B arms.
@@ -50,25 +59,11 @@ class ArmConfig:
 
     @classmethod
     def minimal(cls) -> "ArmConfig":
-        return cls(
-            arm=BenchmarkArm.MINIMAL,
-            semantic_verification=False,
-            proof_gate=False,
-            hypothesis_guard=False,
-            typed_recovery=False,
-            task_progress=False,
-        )
+        return cls(BenchmarkArm.MINIMAL, False, False, False, False, False)
 
     @classmethod
     def verified(cls) -> "ArmConfig":
-        return cls(
-            arm=BenchmarkArm.VERIFIED,
-            semantic_verification=True,
-            proof_gate=True,
-            hypothesis_guard=True,
-            typed_recovery=True,
-            task_progress=True,
-        )
+        return cls(BenchmarkArm.VERIFIED, True, True, True, True, True)
 
     def descriptor(self) -> dict[str, Any]:
         body = asdict(self)
@@ -93,13 +88,7 @@ class ExperimentContract:
     def __post_init__(self) -> None:
         if not isinstance(self.mode, EvaluationMode):
             raise ValueError("mode must be EvaluationMode")
-        for field_name in (
-            "model_id",
-            "model_revision",
-            "controller_revision",
-            "sandbox_id",
-            "oracle_policy_id",
-        ):
+        for field_name in ("model_id", "model_revision", "controller_revision", "sandbox_id", "oracle_policy_id"):
             value = getattr(self, field_name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{field_name} must be a non-empty string")
@@ -119,9 +108,7 @@ class ExperimentContract:
         ):
             raise ValueError("max_wall_seconds must be finite and positive")
         if self.max_tokens is not None and (
-            not isinstance(self.max_tokens, int)
-            or isinstance(self.max_tokens, bool)
-            or self.max_tokens <= 0
+            not isinstance(self.max_tokens, int) or isinstance(self.max_tokens, bool) or self.max_tokens <= 0
         ):
             raise ValueError("max_tokens must be a positive integer when provided")
         if self.seed is not None and (not isinstance(self.seed, int) or isinstance(self.seed, bool)):
@@ -163,12 +150,7 @@ class BenchmarkCase:
             value = getattr(self, field_name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{field_name} must be a non-empty string")
-        if (
-            not isinstance(self.manifest_fingerprint, str)
-            or len(self.manifest_fingerprint) != 64
-            or any(ch not in "0123456789abcdef" for ch in self.manifest_fingerprint)
-        ):
-            raise ValueError("manifest_fingerprint must be lowercase SHA-256 hex")
+        _lower_sha256(self.manifest_fingerprint, field_name="manifest_fingerprint")
         if self.difficulty is not None and (
             not isinstance(self.difficulty, str) or not self.difficulty.strip()
         ):
@@ -194,7 +176,6 @@ class BenchmarkRunSpec:
             raise ValueError("repeat_index must be a non-negative integer")
 
     def comparison_key(self) -> str:
-        """Identity shared by arms in a fair A/B comparison."""
         return canonical_hash({
             "case": self.case.descriptor(),
             "experiment": self.experiment.descriptor(),
@@ -202,30 +183,34 @@ class BenchmarkRunSpec:
         })
 
     def run_id(self) -> str:
-        return canonical_hash({
-            "comparison_key": self.comparison_key(),
-            "arm": self.arm.descriptor(),
-        })
+        return canonical_hash({"comparison_key": self.comparison_key(), "arm": self.arm.descriptor()})
 
 
 @dataclass(frozen=True)
 class IndependentAdjudication:
-    """Benchmark-side truth labels, independent from Actor claims.
+    """Benchmark-side truth labels with an external evidence identity.
 
-    `oracle_accepted` is the final success truth. `invalid_verified_fact_keys`
-    must be supplied by an independent evaluator when false-fact measurement is
-    available; the harness cannot self-declare its own semantic facts correct.
+    The caller must bind oracle/proof/fact judgments to a durable evidence hash.
+    This object does not itself inspect that evidence; the actual benchmark
+    executor/adjudicator introduced with a real corpus must produce the hash.
     """
 
+    adjudicator_id: str
+    evidence_sha256: str
     oracle_accepted: bool
     highest_proof_level: ProofLevel | None
     invalid_verified_fact_keys: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        if not isinstance(self.adjudicator_id, str) or not self.adjudicator_id.strip():
+            raise ValueError("adjudicator_id must be a non-empty string")
+        _lower_sha256(self.evidence_sha256, field_name="evidence_sha256")
         if not isinstance(self.oracle_accepted, bool):
             raise ValueError("oracle_accepted must be boolean")
         if self.highest_proof_level is not None and not isinstance(self.highest_proof_level, ProofLevel):
             raise ValueError("highest_proof_level must be ProofLevel or None")
+        if not isinstance(self.invalid_verified_fact_keys, tuple):
+            raise ValueError("invalid_verified_fact_keys must be a tuple")
         if any(not isinstance(key, str) or not key for key in self.invalid_verified_fact_keys):
             raise ValueError("invalid_verified_fact_keys must contain non-empty strings")
         if len(set(self.invalid_verified_fact_keys)) != len(self.invalid_verified_fact_keys):
@@ -250,6 +235,10 @@ class RawRunOutcome:
     def __post_init__(self) -> None:
         if not isinstance(self.completed_claimed, bool):
             raise ValueError("completed_claimed must be boolean")
+        if not isinstance(self.verified_fact_keys, tuple):
+            raise ValueError("verified_fact_keys must be a tuple")
+        if not isinstance(self.failure_signatures, tuple):
+            raise ValueError("failure_signatures must be a tuple")
         if len(set(self.verified_fact_keys)) != len(self.verified_fact_keys):
             raise ValueError("verified_fact_keys must be unique")
         if any(not isinstance(key, str) or not key for key in self.verified_fact_keys):
@@ -280,3 +269,5 @@ class RawRunOutcome:
             or self.cost_usd < 0
         ):
             raise ValueError("cost_usd must be finite and non-negative when provided")
+        if self.terminal_reason is not None and not isinstance(self.terminal_reason, str):
+            raise ValueError("terminal_reason must be a string when provided")
