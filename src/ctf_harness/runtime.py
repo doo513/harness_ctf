@@ -33,11 +33,13 @@ class VerifiedCTFRuntime(HarnessRuntime):
     tool execution, receipts, failures, recovery, progress and completion.
     """
 
-    def __init__(self, *args, require_hypothesis_for_tools: bool = True, **kwargs):
-        run_dir = Path(kwargs.get("run_dir") if "run_dir" in kwargs else args[3]).resolve()
+    def __init__(self, *, require_hypothesis_for_tools: bool = True, **kwargs):
+        if "run_dir" not in kwargs:
+            raise TypeError("VerifiedCTFRuntime requires the Base keyword argument run_dir")
+        run_dir = Path(kwargs["run_dir"]).resolve()
         self.require_hypothesis_for_tools = bool(require_hypothesis_for_tools)
         self._ctf_hypothesis_ledger_path = run_dir / "ctf_hypotheses.json"
-        super().__init__(*args, **kwargs)
+        super().__init__(**kwargs)
         if self.resume_mode:
             self.ctf_hypotheses = DurableHypothesisLedger.load(self._ctf_hypothesis_ledger_path)
         else:
