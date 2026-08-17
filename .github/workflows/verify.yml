@@ -26,6 +26,13 @@ jobs:
           python -m pip install -e third_party/base_harness --no-deps
           python -m pip install -e .
           python -m pip check
+      - name: Install Pwn engineering probe tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gdb
+          echo "gdb_path=$(command -v gdb)"
+          dpkg-query -W -f='gdb_version=${Version}\n' gdb
+          gdb --version | head -n 1
       - name: Compile
         run: python -m compileall -q src tests scripts third_party/base_harness/src third_party/base_harness/tests third_party/base_harness/scripts
       - name: Base regression
