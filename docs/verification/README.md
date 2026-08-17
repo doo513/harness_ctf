@@ -2,13 +2,14 @@
 
 Latest implementation code gate:
 
-- CTF code commit: `8ff8f535f31072b643cbeb4bed957b6a09e36f47`
+- CTF code commit: `c9b6b34ec2499232cdcf9dfb38ad8379bd0aed75`
 - Pinned Base: `doo513/base_harness@75834ac1ecb6c022771c2efee1f19495f356ee76`
-- GitHub Actions run: `32045210634` — `success`
-- Base regression: `PASS`
-- CTF regression: `129 passed in 5.34s`
+- GitHub Actions run: `32054864672` — `success`
+- Base regression: `220 passed, 7 skipped`
+- CTF regression: `135 passed in 5.59s`
+- preserved CTF pytest artifact: `9296044612`, SHA-256 `d6453dd93b823f665f88b13dc5d5e65e7019da4276ab30db312b40d1ec93e2a2`
 
-The same full gate passed the Base invariant probes, migrated native P1 crash probe, controlled QEMU AArch64 P1 runner probe, controlled operational remote TCP runner probe, existing P2–P6 proof/semantic probes, WP06 hypothesis/dedupe, WP07 recovery/progress, and the WP08 arm/integrity/ingestion/executor/runtime-backed evaluation probes.
+The same full gate passed Base invariants, runtime-bound native P1, controlled QEMU-user AArch64 P1, delayed/over-read operational TCP transport, runtime-bound native x86_64 P2, sealed runtime-bound P3, P4–P6, WP06/WP07, and all existing WP08 evaluation probes.
 
 | Work package | Status | Report |
 |---|---|---|
@@ -24,64 +25,72 @@ The same full gate passed the Base invariant probes, migrated native P1 crash pr
 | WP08 Remediation History | CLOSED at code gate; documentation HEAD revalidated separately | `WP08_REMEDIATION_LOG.md` |
 | WP09 Operational Baseline Freeze | PASS | `WP09_OPERATIONAL_BASELINE_FREEZE_VERIFICATION.md` |
 | WP10 Operational Solve Contracts | PASS | `WP10_OPERATIONAL_SOLVE_CONTRACT_VERIFICATION.md` |
-| WP11 Target Execution Layer | PARTIAL — core execution gate passed | `WP11_TARGET_EXECUTION_VERIFICATION.md` |
+| WP11 Target Execution Layer | PASS — execution boundary stabilized | `WP11_TARGET_EXECUTION_VERIFICATION.md` |
+| WP11 Stage 0 Review | PASS | `WP11_STAGE0_EXECUTION_BOUNDARY_VERIFICATION.md` |
 
 ## Status semantics
 
-`PASS` means the scoped exit gate is exercised by executable evidence. It does not imply broader real-world effectiveness.
+`PASS` means the **named scope** is exercised by executable evidence. It does not imply broader real-world effectiveness.
 
-`PARTIAL` means implemented logic exists and controlled evidence may already pass, but at least one roadmap exit condition remains open.
+`PARTIAL` means implemented logic exists and controlled evidence may pass, but at least one scoped exit condition remains open.
 
-For WP08 specifically:
+For WP08:
 
 ```text
 controlled evaluation infrastructure = PASS
 real fresh/private Pwn A/B effectiveness = NOT ESTABLISHED
 ```
 
-For WP09 specifically:
+For WP09:
 
 ```text
 Base package/lock/CI provenance = consistent
-temporary push acquisition/probe workflows = removed
-operational solver = NOT YET ESTABLISHED
+temporary acquisition/probe workflows = removed
+operational model-driven solver = NOT YET ESTABLISHED
 ```
 
-For WP10 specifically:
+For WP10:
 
 ```text
 ChallengeManifest identity authority = preserved
-operational SolveSpec/target/policy identity = deterministic
+OperationalChallengeRef / SolveSpec identity = deterministic
 credential-bearing TCP URI forms = rejected
-target execution = separate WP11 concern
 ```
 
-For WP11 specifically:
+For WP11:
 
 ```text
-native/custom/QEMU runtime identity contracts = implemented
-native crash path migration = PASS
-controlled QEMU AArch64 P1 = PASS
-operational admitted remote TCP transport = PASS
-actual Dreamhack 103 handout replay = OPEN
-control/local-proof full runner migration = OPEN
+NativeRunner / CustomArgvRunner / QemuUserRunner = execution providers
+P1/P2/P3 runtime + launch identity preservation = PASS
+P2 non-native semantic inflation = blocked
+P3 actor-controlled workspace TOCTOU = blocked by read-only accepted boundary
+RemoteTcpSession delayed/delimiter/exact bounded reads = PASS
+RemoteTcpRunner remains transport, not P5 authority
+actual Dreamhack 103 replay = OPEN empirical follow-up
+AArch64 P2 = UNSUPPORTED / later semantic work
+full-system/VM provider = NOT IMPLEMENTED / add only when a real case requires it
 ```
 
 No report uses code existence, synthetic fixtures, self-reported completion, or documentation text alone as proof of CTF effectiveness.
 
+## Stage 0 failure history
+
+The first strengthened WP11 gate, run `32054672074`, failed after Base and CTF regressions because the controlled QEMU P1 fixture still supplied the legacy fact candidate shape. Actual QEMU execution and SIGSEGV observation succeeded. The fixture was updated to bind the production schema v2 runtime/launch identity, and the full gate then passed at run `32054864672`.
+
+The red gate remains recorded in `WP11_STAGE0_EXECUTION_BOUNDARY_VERIFICATION.md`.
+
 ## Current next evidence gate
 
-The execution blocker identified by the Dreamhack smoke case is now partially removed: non-native AArch64 target execution can produce runtime-bound P1 evidence through the normal crash verifier under a controlled QEMU fixture, and operational remote TCP transport is admission/policy bound.
+Execution is now sufficiently stable to begin the **Agent Foundation** without making SolveEngine wiring a circular WP11 prerequisite.
 
-WP11 is intentionally not marked complete because the roadmap's real-world and migration exits are still open.
+Next dependency-driven sequence:
 
-Next implementation sequence:
+1. define `RunIntent` / `TerminationPolicy` without giving them completion authority;
+2. build CTF model context as a projection over the existing Base context/state authority;
+3. expose a minimal capability catalog describing only Harness-owned actions available to the model;
+4. define typed model decisions and a Harness-owned AgentController boundary;
+5. execute Gate A0 proving model/controller decisions cannot directly mutate facts, proof, or completion;
+6. then build the minimal SolveEngine vertical slice;
+7. only after a real model-driven solve loop exists, run fresh/private Minimal-vs-Verified effectiveness evaluation.
 
-1. migrate the existing control/local-proof execution paths onto the target/runtime abstraction while preserving their current architecture-specific truth rules;
-2. replay the exact Dreamhack 103 handout through `QemuUserRunner` when the artifact bytes/runtime inputs are available and register the reproduced SIGSEGV through the normal Harness evidence -> verifier -> fact path;
-3. integrate the operational remote transport into the later SolveEngine-facing tool boundary;
-4. only then proceed to the Harness-owned Agent Controller / SolveEngine vertical slice;
-5. keep AArch64 P2 semantic generalization in its planned later evidence-generalization scope rather than hiding it behind a generic verifier;
-6. after an operational solver exists, execute the already-built canonical Minimal vs Verified real A/B benchmark with fresh/private cases.
-
-This changes implementation maturity, not the WP08 effectiveness standard. No solve-rate, token, cost, or time improvement claim is permitted until the real fixed A/B evidence exists.
+A smoke stop, budget stop, unsupported-capability stop, or controller self-report must never set `state.completed=True`. Final completion remains External Oracle authority.
