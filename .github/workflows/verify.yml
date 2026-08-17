@@ -97,3 +97,61 @@ jobs:
         run: python scripts/evaluation_executor_boundary_probe.py
       - name: Controlled runtime-backed benchmark executor probe
         run: python scripts/evaluation_runtime_executor_probe.py
+      - name: Temporary Dreamhack 103 remote smoke probe
+        env:
+          CTF_SMOKE_HOST: host3.dreamhack.games
+          CTF_SMOKE_PORT: '13825'
+        run: |
+          python - <<'PY'
+          import json, os, socket, time
+
+          host = os.environ['CTF_SMOKE_HOST']
+          port = int(os.environ['CTF_SMOKE_PORT'])
+
+          def recv_some(sock, timeout=1.0):
+              sock.settimeout(timeout)
+              chunks=[]
+              end=time.monotonic()+timeout
+              while time.monotonic()<end:
+                  try:
+                      b=sock.recv(4096)
+                  except socket.timeout:
+                      break
+                  if not b:
+                      break
+                  chunks.append(b)
+                  if b'Control code?' in b or b'Exception:' in b:
+                      time.sleep(0.05)
+              return b''.join(chunks)
+
+          def transact(payload):
+              s=socket.create_connection((host,port),timeout=5)
+              banner=recv_some(s,1.0)
+              s.sendall(payload)
+              out=recv_some(s,2.0)
+              try:
+                  s.shutdown(socket.SHUT_WR)
+              except OSError:
+                  pass
+              tail=recv_some(s,0.5)
+              s.close()
+              return banner+out+tail
+
+          valid=transact(b'321\n1\n2\n')
+          baseline_invalid=transact(b'1\n')
+          overwrite_candidate=transact(b'768\n0\n0\n0\n0\n0\n0\n')
+          result={
+              'probe':'dreamhack-103-remote-smoke-v1',
+              'valid_add_observed': b'=3.000000' in valid,
+              'valid_prompt_reentered': valid.count(b'Control code?') >= 2,
+              'invalid_exception_observed': b'Exception:' in baseline_invalid,
+              'overwrite_candidate_exception_observed': b'Exception:' in overwrite_candidate,
+              'valid_transcript': valid.decode('utf-8','replace'),
+              'invalid_transcript': baseline_invalid.decode('utf-8','replace'),
+              'overwrite_candidate_transcript': overwrite_candidate.decode('utf-8','replace'),
+              'crash_claimed': False,
+              'flag_claimed': False,
+          }
+          print(json.dumps(result, sort_keys=True))
+          assert result['valid_add_observed'], 'remote service did not exhibit the expected 321/add behavior'
+          PY
