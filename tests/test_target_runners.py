@@ -147,6 +147,7 @@ def test_qemu_runner_binds_qemu_loader_and_sysroot_without_replacing_target_iden
     loader = sysroot / "lib" / "ld-musl-aarch64.so.1"
     loader.write_bytes(b"loader-v1")
     (sysroot / "lib" / "libc.so").write_bytes(b"libc-v1")
+    (sysroot / "lib" / "libc-current.so").symlink_to("libc.so")
     sysroot_fp = fingerprint_workspace_tree(sysroot)
 
     runner = QemuUserRunner(
@@ -221,16 +222,40 @@ def test_qemu_runner_fails_closed_when_runtime_artifact_changes(tmp_path: Path) 
         )
 
 
-def test_runtime_tree_rejects_symlink_identity_escape(tmp_path: Path) -> None:
+def test_runtime_tree_allows_internal_relative_symlink_and_hashes_link_identity(tmp_path: Path) -> None:
+    tree = tmp_path / "tree"
+    (tree / "lib").mkdir(parents=True)
+    target = tree / "lib" / "libc.so.1"
+    target.write_bytes(b"libc")
+    link = tree / "lib" / "libc.so"
+    try:
+        link.symlink_to("libc.so.1")
+    except OSError:
+        pytest.skip("symlink unavailable")
+
+    first = fingerprint_workspace_tree(tree)
+    link.unlink()
+    link.symlink_to("./libc.so.1")
+    second = fingerprint_workspace_tree(tree)
+
+    assert first != second
+
+
+def test_runtime_tree_rejects_absolute_or_escaping_symlink(tmp_path: Path) -> None:
     tree = tmp_path / "tree"
     tree.mkdir()
     outside = tmp_path / "outside"
     outside.write_bytes(b"outside")
-    link = tree / "link"
+
+    escape = tree / "escape"
     try:
-        link.symlink_to(outside)
+        escape.symlink_to("../outside")
     except OSError:
         pytest.skip("symlink unavailable")
+    with pytest.raises(ValueError, match="escapes tree"):
+        fingerprint_workspace_tree(tree)
 
-    with pytest.raises(ValueError, match="symbolic link"):
+    escape.unlink()
+    escape.symlink_to(str(outside.resolve()))
+    with pytest.raises(ValueError, match="unsupported symbolic link"):
         fingerprint_workspace_tree(tree)
