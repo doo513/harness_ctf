@@ -111,13 +111,7 @@ def load_challenge_manifest_json(path: Path) -> ChallengeManifest:
     raw = _strict_object(
         _read_json_regular(path, label="challenge manifest"),
         allowed=_MANIFEST_KEYS,
-        required={
-            "challenge_id",
-            "event",
-            "description",
-            "runner_image_digest",
-            "challenge_revision",
-        },
+        required={"challenge_id", "event", "description", "runner_image_digest", "challenge_revision"},
         label="challenge manifest",
     )
     for field in _TUPLE_MANIFEST_FIELDS:
@@ -125,9 +119,8 @@ def load_challenge_manifest_json(path: Path) -> ChallengeManifest:
         if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
             raise ValueError(f"challenge manifest {field} must be a JSON string array")
         raw[field] = tuple(value)
-    for field in ("allowed_network",):
-        if field in raw and not isinstance(raw[field], bool):
-            raise ValueError(f"challenge manifest {field} must be boolean")
+    if "allowed_network" in raw and not isinstance(raw["allowed_network"], bool):
+        raise ValueError("challenge manifest allowed_network must be boolean")
     return ChallengeManifest(**raw)
 
 
@@ -135,12 +128,21 @@ def load_challenge_manifest_json(path: Path) -> ChallengeManifest:
 class IngestedCorpus:
     corpus: CorpusLock
     index_sha256: str
+    admitted_manifest_sha256: tuple[tuple[str, str], ...]
     admitted_artifact_sha256: tuple[tuple[str, str], ...]
+
+    def __post_init__(self) -> None:
+        _sha256(self.index_sha256, field="index_sha256")
+        if not isinstance(self.admitted_manifest_sha256, tuple):
+            raise ValueError("admitted_manifest_sha256 must be an immutable tuple")
+        if not isinstance(self.admitted_artifact_sha256, tuple):
+            raise ValueError("admitted_artifact_sha256 must be an immutable tuple")
 
     def descriptor(self) -> dict[str, object]:
         return {
             "corpus_fingerprint": self.corpus.fingerprint(),
             "index_sha256": self.index_sha256,
+            "admitted_manifest_sha256": [list(item) for item in self.admitted_manifest_sha256],
             "admitted_artifact_sha256": [list(item) for item in self.admitted_artifact_sha256],
         }
 
@@ -172,7 +174,8 @@ def ingest_corpus_index(corpus_root: str | Path, index_relative: str = "corpus.j
         raise ValueError("corpus index cases must be a non-empty array")
 
     cases = []
-    admitted_pairs: list[tuple[str, str]] = []
+    artifact_pairs: list[tuple[str, str]] = []
+    manifest_pairs: list[tuple[str, str]] = []
     manifest_paths: set[str] = set()
     for position, item in enumerate(raw["cases"]):
         case_raw = _strict_object(
@@ -182,10 +185,13 @@ def ingest_corpus_index(corpus_root: str | Path, index_relative: str = "corpus.j
             label=f"corpus case[{position}]",
         )
         manifest_rel = case_raw["manifest"]
+        manifest_path = _safe_relative_regular_file(root, manifest_rel, label="challenge manifest")
         if manifest_rel in manifest_paths:
             raise ValueError("corpus cases must not reuse the same manifest path")
         manifest_paths.add(manifest_rel)
-        manifest_path = _safe_relative_regular_file(root, manifest_rel, label="challenge manifest")
+        manifest_admission = admit_artifact(manifest_path)
+        manifest_pairs.append((manifest_rel, manifest_admission.sha256))
+
         manifest = load_challenge_manifest_json(manifest_path)
         if manifest.benchmark_policy != mode.value:
             raise ValueError("challenge manifest benchmark_policy differs from corpus mode")
@@ -202,16 +208,15 @@ def ingest_corpus_index(corpus_root: str | Path, index_relative: str = "corpus.j
             artifact_path = _safe_relative_regular_file(root, artifact_ref, label="challenge artifact")
             admitted = admit_artifact(artifact_path, expected_sha256=digest)
             artifact_hashes[artifact_ref] = admitted.sha256
-            admitted_pairs.append((artifact_ref, admitted.sha256))
+            artifact_pairs.append((artifact_ref, admitted.sha256))
 
-        case = case_from_manifest(
+        cases.append(case_from_manifest(
             manifest,
             artifact_hashes,
             case_id=case_raw["case_id"],
             category=case_raw["category"],
             difficulty=case_raw.get("difficulty"),
-        )
-        cases.append(case)
+        ))
 
     corpus = freeze_corpus(
         name=raw["name"],
@@ -223,5 +228,6 @@ def ingest_corpus_index(corpus_root: str | Path, index_relative: str = "corpus.j
     return IngestedCorpus(
         corpus=corpus,
         index_sha256=index_admission.sha256,
-        admitted_artifact_sha256=tuple(sorted(set(admitted_pairs))),
+        admitted_manifest_sha256=tuple(sorted(manifest_pairs)),
+        admitted_artifact_sha256=tuple(sorted(set(artifact_pairs))),
     )
