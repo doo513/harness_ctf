@@ -31,12 +31,22 @@ from ctf_harness.target.remote import RemoteTcpRunner
 FLAG = b"flag{competition_remote_513}\n"
 
 
+class DaemonThreadingTCPServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+    block_on_close = False
+
+
 class ChallengeHandler(socketserver.BaseRequestHandler):
     def handle(self):
+        self.request.settimeout(5.0)
         self.request.sendall(b"READY\n")
         data = b""
         while not data.endswith(b"\n") and len(data) < 64:
-            chunk = self.request.recv(64 - len(data))
+            try:
+                chunk = self.request.recv(64 - len(data))
+            except TimeoutError:
+                return
             if not chunk:
                 return
             data += chunk
@@ -63,6 +73,27 @@ class Model:
             "evidence_refs": [],
         }
 
+    @staticmethod
+    def _visible_remote_records(context: dict) -> list[dict]:
+        records = []
+        observations = context.get("untrusted", {}).get("observations", [])
+        for observation in observations:
+            if observation.get("source") != "remote_tcp":
+                continue
+            preview = observation.get("preview")
+            if not isinstance(preview, dict) or preview.get("format") != "canonical_json":
+                continue
+            text = preview.get("text")
+            if not isinstance(text, str):
+                continue
+            try:
+                record = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict):
+                records.append(record)
+        return records
+
     def complete(self, *, system: str, user: str) -> str:
         self.calls += 1
         if self.calls == 1:
@@ -76,12 +107,14 @@ class Model:
             }
         else:
             request = json.loads(user)
-            rendered = json.dumps(request.get("context", {}), sort_keys=True)
+            context = request.get("context", {})
+            records = self._visible_remote_records(context)
             if self.session_id is None:
-                import re
-                match = re.search(r'"session_id"\s*:\s*"([0-9a-f]+)"', rendered)
-                if match:
-                    self.session_id = match.group(1)
+                for record in records:
+                    session_id = record.get("session_id")
+                    if isinstance(session_id, str) and session_id:
+                        self.session_id = session_id
+                        break
             if not self.session_id:
                 raise RuntimeError("remote session id was not projected into governed context")
             if self.calls == 2:
@@ -180,7 +213,7 @@ def oracle(*, goal, state, workspace):
 
 
 def main() -> int:
-    server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), ChallengeHandler)
+    server = DaemonThreadingTCPServer(("127.0.0.1", 0), ChallengeHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
