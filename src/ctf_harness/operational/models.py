@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 import math
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 from harness.core.storage import canonical_hash
 
@@ -43,6 +44,34 @@ def _artifact_bindings(artifact_hashes: Mapping[str, str]) -> tuple[tuple[str, s
     return tuple(sorted(pairs))
 
 
+def _reject_endpoint_userinfo(endpoint: str, *, field_name: str) -> str:
+    normalized = _require_text(endpoint, field_name=field_name)
+    if normalized != endpoint:
+        raise ValueError(f"{field_name} must not contain surrounding whitespace")
+    parsed = urlsplit(normalized)
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"{field_name} must not contain embedded credentials")
+    return normalized
+
+
+def _validate_tcp_endpoint(endpoint: str) -> str:
+    normalized = _reject_endpoint_userinfo(endpoint, field_name="endpoint")
+    parsed = urlsplit(normalized)
+    if parsed.scheme != "tcp":
+        raise ValueError("TCP target endpoint must use tcp:// scheme")
+    if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+        raise ValueError("TCP target endpoint must not contain path/query/fragment")
+    if not parsed.hostname:
+        raise ValueError("TCP target endpoint host is missing")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("TCP target endpoint port is invalid") from exc
+    if port is None or not (1 <= port <= 65535):
+        raise ValueError("TCP target endpoint port must be in 1..65535")
+    return normalized
+
+
 @dataclass(frozen=True)
 class OperationalChallengeRef:
     """Immutable operational snapshot derived from one admitted ChallengeManifest.
@@ -77,10 +106,10 @@ class OperationalChallengeRef:
         normalized = _artifact_bindings(dict(self.artifact_hashes))
         if normalized != self.artifact_hashes:
             raise ValueError("artifact_hashes must be unique and canonically sorted")
-        if not isinstance(self.remote_endpoints, tuple) or any(
-            not isinstance(item, str) or not item.strip() for item in self.remote_endpoints
-        ):
-            raise ValueError("remote_endpoints must be a tuple of non-empty strings")
+        if not isinstance(self.remote_endpoints, tuple):
+            raise ValueError("remote_endpoints must be an immutable tuple")
+        for endpoint in self.remote_endpoints:
+            _reject_endpoint_userinfo(endpoint, field_name="remote endpoint")
         if len(set(self.remote_endpoints)) != len(self.remote_endpoints):
             raise ValueError("remote_endpoints must be unique")
         if not isinstance(self.allowed_network, bool):
@@ -193,9 +222,12 @@ class RemoteTargetSpec:
     credential_ref: CredentialRef | None = None
 
     def __post_init__(self) -> None:
-        _require_text(self.endpoint, field_name="endpoint")
         if not isinstance(self.transport, RemoteTransport):
             raise ValueError("transport must be RemoteTransport")
+        if self.transport is RemoteTransport.TCP:
+            _validate_tcp_endpoint(self.endpoint)
+        else:
+            _reject_endpoint_userinfo(self.endpoint, field_name="endpoint")
         if self.credential_ref is not None and not isinstance(self.credential_ref, CredentialRef):
             raise ValueError("credential_ref must be CredentialRef when provided")
 
