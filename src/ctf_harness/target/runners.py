@@ -5,6 +5,8 @@ import hashlib
 from pathlib import Path
 from typing import Protocol
 
+from harness.core.storage import canonical_hash
+
 from ctf_harness.operational.models import RuntimeKind
 
 from .models import RuntimeArtifactIdentity, RuntimeLaunch
@@ -18,7 +20,7 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _safe_workspace_file(workspace: Path, value: str, *, field_name: str) -> tuple[Path, str]:
+def _safe_workspace_path(workspace: Path, value: str, *, field_name: str) -> tuple[Path, str]:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty workspace-relative path")
     raw = Path(value)
@@ -35,9 +37,21 @@ def _safe_workspace_file(workspace: Path, value: str, *, field_name: str) -> tup
         relative = resolved.relative_to(workspace)
     except ValueError as exc:
         raise ValueError(f"{field_name} escapes workspace") from exc
+    return resolved, relative.as_posix()
+
+
+def _safe_workspace_file(workspace: Path, value: str, *, field_name: str) -> tuple[Path, str]:
+    resolved, relative = _safe_workspace_path(workspace, value, field_name=field_name)
     if not resolved.is_file():
         raise ValueError(f"{field_name} must be a regular file")
-    return resolved, relative.as_posix()
+    return resolved, relative
+
+
+def _safe_workspace_directory(workspace: Path, value: str, *, field_name: str) -> tuple[Path, str]:
+    resolved, relative = _safe_workspace_path(workspace, value, field_name=field_name)
+    if not resolved.is_dir():
+        raise ValueError(f"{field_name} must be a directory")
+    return resolved, relative
 
 
 def _require_sha256(value: str, *, field_name: str) -> str:
@@ -48,6 +62,28 @@ def _require_sha256(value: str, *, field_name: str) -> str:
     ):
         raise ValueError(f"{field_name} must be lowercase SHA-256 hex")
     return value
+
+
+def fingerprint_workspace_tree(path: Path) -> str:
+    """Hash a runtime tree by relative path and regular-file content.
+
+    Symlinks and non-regular entries fail closed so a stored tree fingerprint
+    cannot silently depend on host paths or special-file semantics.
+    """
+    path = Path(path).resolve(strict=True)
+    if not path.is_dir():
+        raise ValueError("runtime tree must be a directory")
+    entries: list[dict[str, str]] = []
+    for item in sorted(path.rglob("*"), key=lambda value: value.relative_to(path).as_posix()):
+        relative = item.relative_to(path).as_posix()
+        if item.is_symlink():
+            raise ValueError(f"runtime tree contains symbolic link: {relative}")
+        if item.is_dir():
+            continue
+        if not item.is_file():
+            raise ValueError(f"runtime tree contains non-regular entry: {relative}")
+        entries.append({"path": relative, "sha256": _sha256_file(item)})
+    return canonical_hash({"files": entries})
 
 
 def _checked_target(
@@ -115,6 +151,8 @@ class QemuUserRunner:
     qemu_path: str
     qemu_sha256: str
     qemu_args: tuple[str, ...] = ()
+    sysroot_relpath: str | None = None
+    sysroot_fingerprint: str | None = None
     loader_relpath: str | None = None
     loader_sha256: str | None = None
     loader_args: tuple[str, ...] = ()
@@ -134,6 +172,15 @@ class QemuUserRunner:
                 not isinstance(item, str) or not item or "\x00" in item for item in values
             ):
                 raise ValueError(f"{field_name} must be an immutable tuple of non-empty NUL-free strings")
+        if self.sysroot_relpath is None:
+            if self.sysroot_fingerprint is not None:
+                raise ValueError("sysroot_fingerprint requires sysroot_relpath")
+        else:
+            if not isinstance(self.sysroot_relpath, str) or not self.sysroot_relpath.strip():
+                raise ValueError("sysroot_relpath must be a non-empty workspace-relative path")
+            if self.sysroot_fingerprint is None:
+                raise ValueError("sysroot_relpath requires sysroot_fingerprint")
+            _require_sha256(self.sysroot_fingerprint, field_name="sysroot_fingerprint")
         if self.loader_relpath is None:
             if self.loader_sha256 is not None or self.loader_args:
                 raise ValueError("loader hash/args require loader_relpath")
@@ -166,8 +213,24 @@ class QemuUserRunner:
         )
         qemu_identity = self._qemu_identity()
         runtime_artifacts: list[RuntimeArtifactIdentity] = [qemu_identity]
-        argv: list[str] = [qemu_identity.path, *self.qemu_args]
-        runtime_args: list[str] = [*self.qemu_args]
+        argv: list[str] = [qemu_identity.path]
+        runtime_args: list[str] = []
+
+        if self.sysroot_relpath is not None:
+            sysroot, sysroot_relative = _safe_workspace_directory(
+                workspace, self.sysroot_relpath, field_name="sysroot"
+            )
+            actual_tree_fingerprint = fingerprint_workspace_tree(sysroot)
+            if actual_tree_fingerprint != self.sysroot_fingerprint:
+                raise ValueError("sysroot tree fingerprint differs from pinned runtime identity")
+            runtime_artifacts.append(
+                RuntimeArtifactIdentity("sysroot", sysroot_relative, actual_tree_fingerprint)
+            )
+            argv.extend(["-L", f"./{sysroot_relative}"])
+            runtime_args.extend(["-L", "<sysroot>"])
+
+        argv.extend(self.qemu_args)
+        runtime_args.extend(self.qemu_args)
 
         if self.loader_relpath is not None:
             loader, loader_relative = _safe_workspace_file(
