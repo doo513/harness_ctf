@@ -39,6 +39,8 @@ class LeakagePolicy:
         )
 
     def __post_init__(self) -> None:
+        if not isinstance(self.mode, EvaluationMode):
+            raise ValueError("leakage policy mode must be EvaluationMode")
         values = (
             self.web_enabled,
             self.exact_challenge_name_search_allowed,
