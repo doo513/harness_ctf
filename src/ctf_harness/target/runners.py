@@ -64,6 +64,16 @@ def _require_sha256(value: str, *, field_name: str) -> str:
     return value
 
 
+def _validate_fixed_args(values: tuple[str, ...], *, field_name: str) -> tuple[str, ...]:
+    if not isinstance(values, tuple) or any(
+        not isinstance(item, str) or not item or "\x00" in item for item in values
+    ):
+        raise ValueError(
+            f"{field_name} must be an immutable tuple of non-empty NUL-free strings"
+        )
+    return values
+
+
 def fingerprint_workspace_tree(path: Path) -> str:
     """Hash a runtime tree by relative path and regular-file content.
 
@@ -146,6 +156,62 @@ class NativeRunner:
 
 
 @dataclass(frozen=True)
+class CustomArgvRunner:
+    """Launch a target through one pre-registered, hash-bound executable.
+
+    The Actor cannot supply launcher arguments at execution time. `fixed_args`
+    is part of the trusted runner profile, so this remains an execution adapter
+    rather than an arbitrary command/shell escape hatch.
+    """
+
+    profile_id: str
+    launcher_path: str
+    launcher_sha256: str
+    fixed_args: tuple[str, ...] = ()
+    runtime_kind: RuntimeKind = RuntimeKind.CUSTOM_ARGV
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.profile_id, str) or not self.profile_id.strip():
+            raise ValueError("profile_id must be a non-empty string")
+        if self.runtime_kind is not RuntimeKind.CUSTOM_ARGV:
+            raise ValueError("CustomArgvRunner runtime_kind is fixed to custom_argv")
+        path = Path(self.launcher_path)
+        if not path.is_absolute():
+            raise ValueError("launcher_path must be absolute")
+        _require_sha256(self.launcher_sha256, field_name="launcher_sha256")
+        _validate_fixed_args(self.fixed_args, field_name="fixed_args")
+
+    def _launcher_identity(self) -> RuntimeArtifactIdentity:
+        launcher = Path(self.launcher_path).resolve(strict=True)
+        if not launcher.is_file():
+            raise ValueError("launcher_path must be a regular file")
+        actual = _sha256_file(launcher)
+        if actual != self.launcher_sha256:
+            raise ValueError("launcher SHA-256 differs from pinned runtime identity")
+        return RuntimeArtifactIdentity("launcher", str(launcher), actual)
+
+    def build_launch(
+        self,
+        *,
+        workspace: Path,
+        target_relpath: str,
+        expected_target_sha256: str | None = None,
+    ) -> RuntimeLaunch:
+        _, target_relative, target_sha256 = _checked_target(
+            Path(workspace), target_relpath, expected_sha256=expected_target_sha256
+        )
+        launcher = self._launcher_identity()
+        return RuntimeLaunch(
+            profile_id=self.profile_id,
+            runtime_kind=self.runtime_kind,
+            argv=(launcher.path, *self.fixed_args, f"./{target_relative}"),
+            target_sha256=target_sha256,
+            runtime_artifacts=(launcher,),
+            runtime_args=self.fixed_args,
+        )
+
+
+@dataclass(frozen=True)
 class QemuUserRunner:
     profile_id: str
     qemu_path: str
@@ -167,11 +233,8 @@ class QemuUserRunner:
         if not path.is_absolute():
             raise ValueError("qemu_path must be absolute")
         _require_sha256(self.qemu_sha256, field_name="qemu_sha256")
-        for field_name, values in (("qemu_args", self.qemu_args), ("loader_args", self.loader_args)):
-            if not isinstance(values, tuple) or any(
-                not isinstance(item, str) or not item or "\x00" in item for item in values
-            ):
-                raise ValueError(f"{field_name} must be an immutable tuple of non-empty NUL-free strings")
+        _validate_fixed_args(self.qemu_args, field_name="qemu_args")
+        _validate_fixed_args(self.loader_args, field_name="loader_args")
         if self.sysroot_relpath is None:
             if self.sysroot_fingerprint is not None:
                 raise ValueError("sysroot_fingerprint requires sysroot_relpath")
