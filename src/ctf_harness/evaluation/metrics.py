@@ -11,6 +11,7 @@ from .models import (
     EvaluationMode,
     IndependentAdjudication,
     RawRunOutcome,
+    RunExecutionEvidence,
 )
 
 
@@ -23,6 +24,11 @@ class BenchmarkRunRecord:
     mode: EvaluationMode
     arm: BenchmarkArm
     repeat_index: int
+    executor_id: str
+    executor_fingerprint: str
+    boundary_attestor_id: str
+    boundary_evidence_sha256: str
+    run_evidence_sha256: str
     adjudicator_id: str
     adjudication_evidence_sha256: str
     oracle_accepted: bool
@@ -53,7 +59,10 @@ def build_run_record(
     spec: BenchmarkRunSpec,
     outcome: RawRunOutcome,
     adjudication: IndependentAdjudication,
+    execution_evidence: RunExecutionEvidence,
 ) -> BenchmarkRunRecord:
+    if not isinstance(execution_evidence, RunExecutionEvidence):
+        raise ValueError("execution_evidence must be RunExecutionEvidence")
     invalid = set(adjudication.invalid_verified_fact_keys)
     reported = set(outcome.verified_fact_keys)
     if not invalid.issubset(reported):
@@ -67,15 +76,16 @@ def build_run_record(
         mode=spec.experiment.mode,
         arm=spec.arm.arm,
         repeat_index=spec.repeat_index,
+        executor_id=execution_evidence.executor_id.strip(),
+        executor_fingerprint=execution_evidence.executor_fingerprint,
+        boundary_attestor_id=execution_evidence.boundary_attestor_id.strip(),
+        boundary_evidence_sha256=execution_evidence.boundary_evidence_sha256,
+        run_evidence_sha256=execution_evidence.run_evidence_sha256,
         adjudicator_id=adjudication.adjudicator_id.strip(),
         adjudication_evidence_sha256=adjudication.evidence_sha256,
         oracle_accepted=adjudication.oracle_accepted,
         completed_claimed=outcome.completed_claimed,
-        highest_proof_level=(
-            int(adjudication.highest_proof_level)
-            if adjudication.highest_proof_level is not None
-            else None
-        ),
+        highest_proof_level=(int(adjudication.highest_proof_level) if adjudication.highest_proof_level is not None else None),
         false_completion=bool(outcome.completed_claimed and not adjudication.oracle_accepted),
         false_fact_count=len(invalid),
         repeated_failure_count=repeated_failure_count(outcome.failure_signatures),
@@ -202,13 +212,7 @@ def compare_paired_ab(records: Iterable[BenchmarkRunRecord]) -> PairedABMetrics:
         verified_minus_minimal_mean_tool_calls=verified_agg.mean_tool_calls - minimal_agg.mean_tool_calls,
         verified_minus_minimal_mean_steps=verified_agg.mean_steps - minimal_agg.mean_steps,
         verified_minus_minimal_mean_wall_seconds=verified_agg.mean_wall_seconds - minimal_agg.mean_wall_seconds,
-        verified_minus_minimal_repeated_failures=(
-            verified_agg.repeated_failure_count - minimal_agg.repeated_failure_count
-        ),
-        verified_minus_minimal_false_completions=(
-            verified_agg.false_completion_count - minimal_agg.false_completion_count
-        ),
-        verified_minus_minimal_false_facts=(
-            verified_agg.false_fact_count - minimal_agg.false_fact_count
-        ),
+        verified_minus_minimal_repeated_failures=verified_agg.repeated_failure_count - minimal_agg.repeated_failure_count,
+        verified_minus_minimal_false_completions=verified_agg.false_completion_count - minimal_agg.false_completion_count,
+        verified_minus_minimal_false_facts=verified_agg.false_fact_count - minimal_agg.false_fact_count,
     )
