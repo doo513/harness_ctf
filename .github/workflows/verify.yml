@@ -29,7 +29,7 @@ jobs:
       - name: Install Pwn engineering probe tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gdb qemu-user-static gcc
+          sudo apt-get install -y --no-install-recommends gdb qemu-user-static gcc binutils
           echo "gdb_path=$(command -v gdb)"
           dpkg-query -W -f='gdb_version=${Version}\n' gdb
           gdb --version | head -n 1
@@ -37,6 +37,7 @@ jobs:
           dpkg-query -W -f='qemu_user_static_version=${Version}\n' qemu-user-static
           qemu-aarch64-static --version | head -n 1
           gcc --version | head -n 1
+          strings --version | head -n 1
       - name: Compile
         run: python -m compileall -q src tests scripts third_party/base_harness/src third_party/base_harness/tests third_party/base_harness/scripts
       - name: Base regression
@@ -93,6 +94,10 @@ jobs:
         run: sudo -E "$(command -v python)" scripts/analysis_sandbox_probe.py
       - name: Live Pwn operational vertical slice
         run: sudo -E "$(command -v python)" scripts/pwn_operational_vertical_probe.py
+      - name: Controlled competition remote TCP SolveEngine probe
+        run: python scripts/competition_remote_solve_probe.py
+      - name: Controlled Crypto/Reverse cross-domain SolveEngine probe
+        run: sudo -E "$(command -v python)" scripts/cross_domain_vertical_probe.py
       - name: Live Pwn crash semantic probe
         run: sudo -E "$(command -v python)" scripts/pwn_crash_semantic_probe.py
       - name: Controlled QEMU AArch64 crash runner probe
