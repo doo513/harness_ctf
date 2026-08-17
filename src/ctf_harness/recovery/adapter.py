@@ -40,8 +40,12 @@ _MAP: dict[CTFFailureKind, RecoveryMapping] = {
     CTFFailureKind.RECON_INCOMPLETE: RecoveryMapping(
         FailureKind.MISSING_INFO, "targeted_recon"
     ),
+    # CTF category assessments and sidecar hypotheses are not Core logical
+    # hypotheses. Mapping them to Core HYPOTHESIS_REFUTED would make ROLLBACK
+    # interpret the route label as a Core hypothesis key. Use Base REPLAN
+    # semantics instead and let the CTF target describe the strategy change.
     CTFFailureKind.CATEGORY_MISCLASSIFIED: RecoveryMapping(
-        FailureKind.HYPOTHESIS_REFUTED, "category_switch"
+        FailureKind.NO_PROGRESS, "category_switch"
     ),
     CTFFailureKind.TOOL_MISSING: RecoveryMapping(
         FailureKind.ENV_ERROR, "install_or_substitute_tool"
@@ -53,7 +57,7 @@ _MAP: dict[CTFFailureKind, RecoveryMapping] = {
         FailureKind.NO_PROGRESS, "restart_or_switch_session"
     ),
     CTFFailureKind.HYPOTHESIS_REFUTED: RecoveryMapping(
-        FailureKind.HYPOTHESIS_REFUTED, "close_branch"
+        FailureKind.NO_PROGRESS, "close_branch"
     ),
     CTFFailureKind.PRIMITIVE_NOT_REPRODUCIBLE: RecoveryMapping(
         FailureKind.VERIFICATION_FAILED, "alternate_primitive"
