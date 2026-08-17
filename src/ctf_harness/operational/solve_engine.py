@@ -28,8 +28,8 @@ class SolveRuntimeBinding:
     """Operator wiring checked against one immutable SolveSpec.
 
     `target_relpath` is an execution location only for local targets. Remote
-    targets must leave it unset and are bound through the profile's admitted
-    RemoteTcpRunner. Challenge/target identity remains owned by SolveSpec.
+    targets leave it unset and are bound to Harness-owned scoped transport
+    providers. Challenge/target identity remains owned by SolveSpec.
     """
 
     profile: VerifiedCTFProfile
@@ -136,8 +136,6 @@ class SolveEngine:
         else:
             raise ValueError("unsupported SolveSpec target type")
 
-        # Keep arbitrary actor subprocess network denied in both modes. Remote
-        # access occurs only through Harness-owned scoped transport tools.
         return SecurityConfig(
             strict_layout=True,
             strict_tool_isolation=False,
@@ -199,16 +197,10 @@ class SolveEngine:
         }
 
     @staticmethod
-    def _validate_remote_binding(spec: SolveSpec, binding: SolveRuntimeBinding) -> dict:
-        if not isinstance(spec.target, RemoteTargetSpec):
-            raise TypeError("remote binding validator requires RemoteTargetSpec")
-        if spec.target.transport is not RemoteTransport.TCP:
-            raise ValueError("current SolveEngine remote binding supports admitted TCP transport only")
-        if binding.target_relpath is not None:
-            raise ValueError("remote SolveSpec must not bind a local target_relpath")
+    def _validate_tcp_binding(spec: SolveSpec, binding: SolveRuntimeBinding) -> dict:
         runner = binding.profile.remote_tcp_runner
         if runner is None or binding.profile.remote_tcp_tool_runtime is None:
-            raise ValueError("remote SolveSpec requires a bound RemoteTcpRunner tool")
+            raise ValueError("TCP remote SolveSpec requires a bound RemoteTcpRunner tool")
         if runner.challenge.manifest_fingerprint != spec.challenge.manifest_fingerprint:
             raise ValueError("remote runner challenge identity differs from SolveSpec")
         if runner.target != spec.target:
@@ -228,6 +220,37 @@ class SolveEngine:
             "max_send_bytes": description["max_send_bytes"],
             "max_read_bytes": description["max_read_bytes"],
         }
+
+    @staticmethod
+    def _validate_http_binding(spec: SolveSpec, binding: SolveRuntimeBinding) -> dict:
+        client = binding.profile.challenge_http
+        if client is None:
+            raise ValueError("HTTP remote SolveSpec requires a bound ChallengeHttpClient tool")
+        admitted_url = client.require_allowed(spec.target.endpoint)
+        if admitted_url != spec.target.endpoint:
+            raise ValueError("HTTP target endpoint normalization differs from SolveSpec")
+        if "scoped_http" not in binding.profile.tools():
+            raise ValueError("bound profile does not expose admitted scoped_http capability")
+        return {
+            "kind": "remote",
+            "endpoint": spec.target.endpoint,
+            "transport": spec.target.transport.value,
+            "allowed_origins": list(client.allowed_origins),
+            "max_response_bytes": client.max_response_bytes,
+            "credential_headers_allowed": False,
+        }
+
+    @classmethod
+    def _validate_remote_binding(cls, spec: SolveSpec, binding: SolveRuntimeBinding) -> dict:
+        if not isinstance(spec.target, RemoteTargetSpec):
+            raise TypeError("remote binding validator requires RemoteTargetSpec")
+        if binding.target_relpath is not None:
+            raise ValueError("remote SolveSpec must not bind a local target_relpath")
+        if spec.target.transport is RemoteTransport.TCP:
+            return cls._validate_tcp_binding(spec, binding)
+        if spec.target.transport is RemoteTransport.HTTP:
+            return cls._validate_http_binding(spec, binding)
+        raise ValueError("unsupported remote challenge transport")
 
     @classmethod
     def _validate_binding(cls, spec: SolveSpec, binding: SolveRuntimeBinding) -> dict:
