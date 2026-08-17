@@ -8,6 +8,7 @@ from ctf_harness.domains.registry import DomainRegistry
 from ctf_harness.domains.standard import CryptoPlaybook, ForensicsPlaybook, MiscPlaybook, ReversePlaybook, WebPlaybook
 from ctf_harness.sandbox import AnalysisSandbox
 from ctf_harness.target.runners import NativeRunner, TargetRunner
+from ctf_harness.tools.capabilities import CapabilityCatalog
 from ctf_harness.tools.domain_recon import make_domain_recon_handler
 from ctf_harness.tools.recon import make_pwn_recon_handler
 from ctf_harness.tools.crash import make_crash_probe_tool
@@ -50,6 +51,7 @@ class VerifiedCTFProfile(CTFProfile):
         semantic_modules: DomainModuleRegistry | None = None,
         active_domains: tuple[str, ...] = ("pwn",),
         analysis_sandbox: AnalysisSandbox | None = None,
+        capability_catalog: CapabilityCatalog | None = None,
     ):
         super().__init__(workspace=workspace, external_oracle=external_oracle, execution_backend=execution_backend)
         self.flag_completion_oracle = flag_completion_oracle
@@ -87,6 +89,9 @@ class VerifiedCTFProfile(CTFProfile):
         if analysis_sandbox is not None and not isinstance(analysis_sandbox, AnalysisSandbox):
             raise ValueError("analysis_sandbox must be AnalysisSandbox when provided")
         self.analysis_sandbox = analysis_sandbox
+        if capability_catalog is not None and not isinstance(capability_catalog, CapabilityCatalog):
+            raise ValueError("capability_catalog must be CapabilityCatalog when provided")
+        self.capability_catalog = capability_catalog
 
     def tools(self):
         tools = super().tools()
@@ -135,6 +140,8 @@ class VerifiedCTFProfile(CTFProfile):
         )
         if self.analysis_sandbox is not None:
             tools["analysis_exec"] = self.analysis_sandbox.tool()
+        if self.capability_catalog is not None:
+            tools["host_capability"] = self.capability_catalog.make_tool()
         return tools
 
     def verifiers(self):
