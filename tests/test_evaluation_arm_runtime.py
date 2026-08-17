@@ -4,6 +4,7 @@ import pytest
 
 from harness.core.contracts import GoalContract
 from harness.core.controller import Decision, ScriptedController
+from harness.core.failures import Failure, FailureKind
 from harness.core.runtime import HarnessRuntime
 from harness.core.sandbox import ExecutionResult, RecordingIsolatedTestBackend
 
@@ -99,14 +100,24 @@ def test_minimal_tool_path_has_no_ctf_hypothesis_guard_but_verified_does(tmp_pat
 
 def test_minimal_semantic_verification_cannot_commit_verified_fact(tmp_path):
     minimal, _ = _runtime(tmp_path, ArmConfig.minimal(), run_name="minimal-verify")
+    claim_key = "ctf.pwn.crash_reproducible"
     minimal._dispatch_decision(Decision("propose", {
-        "key": "ctf.pwn.crash_reproducible",
+        "key": claim_key,
         "value": {"claimed": True},
         "evidence_refs": [],
     }))
-    assert "ctf.pwn.crash_reproducible" in minimal.state.hypotheses
+    assert claim_key in minimal.state.hypotheses
 
-    minimal._dispatch_decision(Decision("verify_claim", {"key": "ctf.pwn.crash_reproducible"}))
-    assert "ctf.pwn.crash_reproducible" not in minimal.state.facts
-    assert minimal.state.failures[-1]["kind"] == "no_progress"
-    assert minimal.state.failures[-1]["signature"].endswith("benchmark:minimal:semantic_verification_disabled")
+    minimal._dispatch_decision(Decision("verify_claim", {"key": claim_key}))
+    assert claim_key not in minimal.state.facts
+    failure_record = minimal.state.failures[-1]
+    assert failure_record["kind"] == "no_progress"
+    assert failure_record["target"] == claim_key
+    assert failure_record["message"] == "semantic verification is disabled in the canonical Minimal CTF Loop"
+    expected = Failure(
+        FailureKind.NO_PROGRESS,
+        "semantic verification is disabled in the canonical Minimal CTF Loop",
+        action=claim_key,
+        signature_key="benchmark:minimal:semantic_verification_disabled",
+    )
+    assert failure_record["signature"] == expected.signature
