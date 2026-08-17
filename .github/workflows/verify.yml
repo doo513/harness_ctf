@@ -50,7 +50,20 @@ jobs:
           python scripts/stage7_context_probe.py
           python scripts/stage8_retrieval_probe.py
       - name: CTF regression
-        run: pytest -q
+        shell: bash
+        run: |
+          set +e
+          pytest -q --tb=short > ctf-pytest.log 2>&1
+          status=$?
+          cat ctf-pytest.log
+          {
+            echo '## CTF regression diagnostic'
+            echo
+            echo '```text'
+            tail -n 180 ctf-pytest.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
       - name: Live Pwn crash semantic probe
         run: sudo -E "$(command -v python)" scripts/pwn_crash_semantic_probe.py
       - name: Live Pwn x86_64 control-flow semantic probe
