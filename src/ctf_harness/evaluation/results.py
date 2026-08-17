@@ -28,6 +28,11 @@ def record_descriptor(record: BenchmarkRunRecord) -> dict[str, object]:
         "mode": record.mode.value,
         "arm": record.arm.value,
         "repeat_index": record.repeat_index,
+        "executor_id": record.executor_id,
+        "executor_fingerprint": record.executor_fingerprint,
+        "boundary_attestor_id": record.boundary_attestor_id,
+        "boundary_evidence_sha256": record.boundary_evidence_sha256,
+        "run_evidence_sha256": record.run_evidence_sha256,
         "adjudicator_id": record.adjudicator_id,
         "adjudication_evidence_sha256": record.adjudication_evidence_sha256,
         "oracle_accepted": record.oracle_accepted,
@@ -44,6 +49,18 @@ def record_descriptor(record: BenchmarkRunRecord) -> dict[str, object]:
         "cost_usd": record.cost_usd,
         "terminal_reason": record.terminal_reason,
     }
+
+
+def _valid_identity_record(record: BenchmarkRunRecord) -> bool:
+    return bool(
+        record.executor_id.strip()
+        and _is_sha256(record.executor_fingerprint)
+        and record.boundary_attestor_id.strip()
+        and _is_sha256(record.boundary_evidence_sha256)
+        and _is_sha256(record.run_evidence_sha256)
+        and record.adjudicator_id.strip()
+        and _is_sha256(record.adjudication_evidence_sha256)
+    )
 
 
 @dataclass(frozen=True)
@@ -85,8 +102,8 @@ class BenchmarkResultBundle:
                 raise ValueError("result mode/arm differs from planned run")
             if row.repeat_index != spec.repeat_index:
                 raise ValueError("result repeat index differs from planned run")
-            if not row.adjudicator_id.strip() or not _is_sha256(row.adjudication_evidence_sha256):
-                raise ValueError("result record lacks a valid independent adjudication evidence identity")
+            if not _valid_identity_record(row):
+                raise ValueError("result record lacks a complete execution/adjudication evidence identity")
 
         return cls(
             plan_fingerprint=plan.fingerprint(),
@@ -95,7 +112,7 @@ class BenchmarkResultBundle:
 
     def body(self) -> dict[str, object]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "plan_fingerprint": self.plan_fingerprint,
             "records": [record_descriptor(row) for row in self.records],
         }
@@ -122,7 +139,7 @@ class BenchmarkResultBundle:
         if canonical_hash(raw["body"]) != raw.get("body_sha256"):
             raise IntegrityError("benchmark result bundle integrity mismatch")
         body = raw["body"]
-        if not isinstance(body, dict) or body.get("schema_version") != 1:
+        if not isinstance(body, dict) or body.get("schema_version") != 2:
             raise IntegrityError("unsupported benchmark result schema")
         if body.get("plan_fingerprint") != expected_plan_fingerprint:
             raise IntegrityError("benchmark result bundle belongs to a different plan")
@@ -132,8 +149,15 @@ class BenchmarkResultBundle:
         for record in records:
             if not isinstance(record, dict):
                 raise IntegrityError("benchmark result record is malformed")
-            if not isinstance(record.get("adjudicator_id"), str) or not record["adjudicator_id"].strip():
-                raise IntegrityError("benchmark result record lacks adjudicator identity")
-            if not _is_sha256(record.get("adjudication_evidence_sha256")):
-                raise IntegrityError("benchmark result record lacks adjudication evidence hash")
+            for text_field in ("executor_id", "boundary_attestor_id", "adjudicator_id"):
+                if not isinstance(record.get(text_field), str) or not record[text_field].strip():
+                    raise IntegrityError(f"benchmark result record lacks {text_field}")
+            for digest_field in (
+                "executor_fingerprint",
+                "boundary_evidence_sha256",
+                "run_evidence_sha256",
+                "adjudication_evidence_sha256",
+            ):
+                if not _is_sha256(record.get(digest_field)):
+                    raise IntegrityError(f"benchmark result record lacks {digest_field}")
         return body
