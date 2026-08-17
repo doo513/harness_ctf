@@ -119,7 +119,7 @@ class SolveEngine:
             required = NetworkPolicy(False, False, False)
             if spec.network_policy != required:
                 raise ValueError(
-                    "local SolveEngine runs require network-isolated policy; "
+                    "WP13 minimal SolveEngine supports only network-isolated local runs; "
                     "challenge/general/retrieval network must be disabled"
                 )
         elif isinstance(spec.target, RemoteTargetSpec):
