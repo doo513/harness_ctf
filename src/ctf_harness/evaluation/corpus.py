@@ -5,6 +5,9 @@ from typing import Iterable
 
 from harness.core.storage import canonical_hash
 
+from ctf_harness.manifest.fingerprint import manifest_fingerprint
+from ctf_harness.manifest.models import ChallengeManifest
+
 from .models import BenchmarkCase, EvaluationMode
 
 
@@ -17,6 +20,8 @@ class CorpusLock:
     unpublished: bool
 
     def __post_init__(self) -> None:
+        if not isinstance(self.mode, EvaluationMode):
+            raise ValueError("corpus mode must be EvaluationMode")
         if not isinstance(self.name, str) or not self.name.strip():
             raise ValueError("corpus name is required")
         if not isinstance(self.revision, str) or not self.revision.strip():
@@ -25,6 +30,8 @@ class CorpusLock:
             raise ValueError("unpublished must be boolean")
         if not self.cases:
             raise ValueError("corpus must contain at least one case")
+        if any(case.mode is not self.mode for case in self.cases):
+            raise ValueError("every benchmark case mode must match the corpus mode")
         case_ids = [case.case_id for case in self.cases]
         if len(set(case_ids)) != len(case_ids):
             raise ValueError("corpus case_id values must be unique")
@@ -49,14 +56,37 @@ class CorpusLock:
     def fingerprint(self) -> str:
         return canonical_hash(self.descriptor())
 
-    def require_case(self, case_id: str, manifest_fingerprint: str) -> BenchmarkCase:
+    def require_case(self, case_id: str, manifest_fingerprint_value: str) -> BenchmarkCase:
         matches = [case for case in self.cases if case.case_id == case_id]
         if len(matches) != 1:
             raise ValueError(f"case is not in frozen corpus: {case_id!r}")
         case = matches[0]
-        if case.manifest_fingerprint != manifest_fingerprint:
+        if case.manifest_fingerprint != manifest_fingerprint_value:
             raise ValueError("case manifest fingerprint differs from frozen corpus")
         return case
+
+
+def case_from_manifest(
+    manifest: ChallengeManifest,
+    artifact_hashes: dict[str, str],
+    *,
+    case_id: str,
+    category: str,
+    difficulty: str | None = None,
+) -> BenchmarkCase:
+    try:
+        mode = EvaluationMode(manifest.benchmark_policy)
+    except ValueError as exc:
+        raise ValueError("challenge manifest has unsupported benchmark policy") from exc
+    return BenchmarkCase(
+        case_id=case_id,
+        challenge_id=manifest.challenge_id,
+        challenge_revision=manifest.challenge_revision,
+        manifest_fingerprint=manifest_fingerprint(manifest, artifact_hashes),
+        mode=mode,
+        category=category,
+        difficulty=difficulty,
+    )
 
 
 def freeze_corpus(
