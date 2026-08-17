@@ -11,6 +11,7 @@ from ctf_harness.evaluation.models import (
     ExperimentContract,
     IndependentAdjudication,
     RawRunOutcome,
+    RunExecutionEvidence,
 )
 from ctf_harness.evaluation.policy import LeakagePolicy
 from ctf_harness.evaluation.results import BenchmarkResultBundle
@@ -67,6 +68,16 @@ def adjudication(*, evidence_byte: str, accepted: bool, proof, invalid=()):
     )
 
 
+def execution_evidence(*, executor_byte: str) -> RunExecutionEvidence:
+    return RunExecutionEvidence(
+        executor_id="controlled-fixture-executor",
+        executor_fingerprint=executor_byte * 64,
+        boundary_attestor_id="controlled-fixture-boundary-attestor",
+        boundary_evidence_sha256="b" * 64,
+        run_evidence_sha256="c" * 64,
+    )
+
+
 def main() -> int:
     cases = tuple(fixture_case(index) for index in range(10))
     corpus = freeze_corpus(
@@ -115,6 +126,7 @@ def main() -> int:
             proof=ProofLevel.P0_SURFACE,
             invalid=("ctf.pwn.arch",),
         ),
+        execution_evidence(executor_byte="a"),
     )
     verified_record = build_run_record(
         verified_spec,
@@ -127,6 +139,7 @@ def main() -> int:
             wall_seconds=10.0,
         ),
         adjudication(evidence_byte="2", accepted=False, proof=None),
+        execution_evidence(executor_byte="d"),
     )
     paired = compare_paired_ab((minimal_record, verified_record))
     assert paired.minimal_success_rate == 0.0
@@ -135,6 +148,9 @@ def main() -> int:
     assert minimal_record.false_completion is True
     assert minimal_record.false_fact_count == 1
     assert minimal_record.repeated_failure_count == 2
+    assert len(minimal_record.executor_fingerprint) == 64
+    assert len(minimal_record.boundary_evidence_sha256) == 64
+    assert len(minimal_record.run_evidence_sha256) == 64
     assert len(minimal_record.adjudication_evidence_sha256) == 64
 
     # Exact result-plan binding without fabricating outcomes for all 20 fixture runs.
@@ -159,11 +175,14 @@ def main() -> int:
             expected_plan_fingerprint=one_case_plan.fingerprint(),
         )
         assert len(loaded["records"]) == 2
+        assert all(record["executor_id"] for record in loaded["records"])
+        assert all(record["boundary_attestor_id"] for record in loaded["records"])
         assert all(record["adjudicator_id"] for record in loaded["records"])
+        assert all(len(record["run_evidence_sha256"]) == 64 for record in loaded["records"])
         assert all(len(record["adjudication_evidence_sha256"]) == 64 for record in loaded["records"])
 
     print(json.dumps({
-        "probe": "ctf-evaluation-integrity-controlled-v2",
+        "probe": "ctf-evaluation-integrity-controlled-v3",
         "all_passed": True,
         "fixture_only": True,
         "actual_private_challenge_corpus_supplied": False,
@@ -184,6 +203,8 @@ def main() -> int:
         "false_completion_detected": minimal_record.false_completion,
         "independently_invalid_fact_counted": minimal_record.false_fact_count,
         "repeated_failure_counted": minimal_record.repeated_failure_count,
+        "execution_evidence_bound": True,
+        "boundary_attestation_evidence_bound": True,
         "adjudication_evidence_bound": True,
         "result_bundle_bound_to_plan": True,
         "result_bundle_sha256": result_digest,
