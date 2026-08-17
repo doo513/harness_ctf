@@ -9,7 +9,12 @@ from urllib.parse import urlsplit
 
 from harness.core.storage import canonical_hash
 
-from ctf_harness.operational.models import NetworkPolicy, RemoteTargetSpec, RemoteTransport
+from ctf_harness.operational.models import (
+    NetworkPolicy,
+    OperationalChallengeRef,
+    RemoteTargetSpec,
+    RemoteTransport,
+)
 
 
 def _normalized_ip(value: str) -> str:
@@ -43,6 +48,7 @@ class RemoteTranscriptReceipt:
     schema_version: int
     kind: str
     endpoint_id: str
+    challenge_manifest_fingerprint: str
     peer_ip: str
     peer_port: int
     opened: bool
@@ -58,6 +64,7 @@ class RemoteTranscriptReceipt:
             "schema_version": self.schema_version,
             "kind": self.kind,
             "endpoint_id": self.endpoint_id,
+            "challenge_manifest_fingerprint": self.challenge_manifest_fingerprint,
             "peer_ip": self.peer_ip,
             "peer_port": self.peer_port,
             "opened": self.opened,
@@ -76,6 +83,7 @@ class RemoteTcpSession:
         *,
         sock: socket.socket,
         endpoint_id: str,
+        challenge_manifest_fingerprint: str,
         peer_ip: str,
         peer_port: int,
         timeout_seconds: float,
@@ -84,6 +92,7 @@ class RemoteTcpSession:
     ):
         self._sock = sock
         self.endpoint_id = endpoint_id
+        self.challenge_manifest_fingerprint = challenge_manifest_fingerprint
         self.peer_ip = peer_ip
         self.peer_port = peer_port
         self.timeout_seconds = timeout_seconds
@@ -159,6 +168,7 @@ class RemoteTcpSession:
             schema_version=1,
             kind="ctf_remote_tcp_transcript",
             endpoint_id=self.endpoint_id,
+            challenge_manifest_fingerprint=self.challenge_manifest_fingerprint,
             peer_ip=self.peer_ip,
             peer_port=self.peer_port,
             opened=True,
@@ -181,12 +191,14 @@ class RemoteTcpRunner:
     """Operational challenge transport restricted to one admitted TCP endpoint.
 
     This is transport, not a P5 truth oracle. It returns response bytes to the
-    solve runtime while receipts persist only hashes/counts. DNS is resolved at
-    construction and later connections use only the pinned numeric addresses.
+    solve runtime while receipts persist only hashes/counts. The target must be
+    bound to an `OperationalChallengeRef`, DNS is resolved at construction, and
+    later connections use only the pinned numeric addresses.
     """
 
     def __init__(
         self,
+        challenge: OperationalChallengeRef,
         target: RemoteTargetSpec,
         *,
         network_policy: NetworkPolicy,
@@ -194,10 +206,16 @@ class RemoteTcpRunner:
         max_send_bytes: int = 65536,
         max_read_bytes: int = 65536,
     ):
+        if not isinstance(challenge, OperationalChallengeRef):
+            raise ValueError("challenge must be OperationalChallengeRef")
         if not isinstance(target, RemoteTargetSpec):
             raise ValueError("target must be RemoteTargetSpec")
         if target.transport is not RemoteTransport.TCP:
             raise ValueError("RemoteTcpRunner requires TCP transport")
+        if target.endpoint not in challenge.remote_endpoints:
+            raise ValueError("remote endpoint is not admitted by challenge manifest")
+        if not challenge.allowed_network:
+            raise ValueError("challenge manifest does not allow network target access")
         if not isinstance(network_policy, NetworkPolicy):
             raise ValueError("network_policy must be NetworkPolicy")
         if not network_policy.challenge_transport:
@@ -223,6 +241,7 @@ class RemoteTcpRunner:
         if not addresses:
             raise ValueError("remote endpoint resolved to no TCP IPv4/IPv6 address")
 
+        self.challenge = challenge
         self.target = target
         self.network_policy = network_policy
         self.host = host
@@ -235,6 +254,7 @@ class RemoteTcpRunner:
             {
                 "schema_version": 1,
                 "transport": "tcp",
+                "challenge_manifest_fingerprint": challenge.manifest_fingerprint,
                 "endpoint": target.endpoint,
                 "host": host,
                 "port": port,
@@ -253,6 +273,7 @@ class RemoteTcpRunner:
             "schema_version": 1,
             "kind": "ctf_remote_tcp_runner",
             "endpoint_id": self.endpoint_id,
+            "challenge_manifest_fingerprint": self.challenge.manifest_fingerprint,
             "transport": "tcp",
             "host": self.host,
             "port": self.port,
@@ -282,6 +303,7 @@ class RemoteTcpRunner:
                 return RemoteTcpSession(
                     sock=sock,
                     endpoint_id=self.endpoint_id,
+                    challenge_manifest_fingerprint=self.challenge.manifest_fingerprint,
                     peer_ip=peer_ip,
                     peer_port=self.port,
                     timeout_seconds=self.timeout_seconds,
