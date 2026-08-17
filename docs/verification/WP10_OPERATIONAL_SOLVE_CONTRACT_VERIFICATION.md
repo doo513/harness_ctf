@@ -59,7 +59,13 @@ It binds:
 - admitted oracle type;
 - benchmark policy.
 
-It does not redefine description/category/tool policy or create a new fingerprint algorithm.
+Direct normal dataclass construction is disabled. The supported public construction path is:
+
+```text
+OperationalChallengeRef.from_manifest(...)
+```
+
+so copied identity fields cannot become a second normal challenge authority.
 
 ### `CredentialRef`
 
@@ -114,6 +120,8 @@ optional CredentialRef
 
 The initial transport is TCP.
 
+For TCP, the endpoint contract is canonicalized by validation rather than accepting arbitrary URI material. It requires `tcp://`, host, and port, and rejects embedded username/password, path/query/fragment data, invalid ports, or surrounding whitespace. Raw secrets therefore cannot be smuggled into the normal TCP target contract through URI userinfo/query fields.
+
 ### `AgentSpec`
 
 Binds provider/model/model-revision/controller-revision identity only. No provider client is implemented in WP10.
@@ -165,57 +173,58 @@ tests/test_operational_models.py
 Important fail-closed invariants:
 
 1. the artifact hash set used to create an operational challenge ref must exactly equal the manifest artifact set;
-2. a local target artifact must be admitted by the challenge manifest;
-3. local target SHA-256 must equal the admitted artifact hash;
-4. a remote endpoint must appear in the manifest;
-5. the manifest must allow network access before a remote target can be used;
-6. the solve network policy must explicitly permit challenge transport;
-7. solve oracle authority must match the manifest;
-8. runtime/transport/credential kinds are typed closed variants rather than arbitrary strings;
-9. malformed hashes and non-finite/non-positive budgets are rejected.
+2. normal public construction of `OperationalChallengeRef` is disabled;
+3. a local target artifact must be admitted by the challenge manifest;
+4. local target SHA-256 must equal the admitted artifact hash;
+5. a remote endpoint must appear in the manifest;
+6. the manifest must allow network access before a remote target can be used;
+7. the solve network policy must explicitly permit challenge transport;
+8. solve oracle authority must match the manifest;
+9. runtime/transport/credential kinds are typed closed variants rather than arbitrary strings;
+10. malformed hashes and non-finite/non-positive budgets are rejected;
+11. credential-bearing/token-bearing TCP URI forms are rejected before they enter `SolveSpec`.
 
 ---
 
 ## 5. Positive Evidence
 
-WP10 implementation code gate:
+Initial WP10 implementation code gate:
 
 ```text
 commit: 702b75c0a6e6f7fca60f276b996026b7946468a9
 GitHub Actions run: 32043650906
 conclusion: success
+CTF pytest: 109 passed in 4.98s
 ```
 
-Preserved CTF pytest artifact:
+WP11 review subsequently found two WP10 hardening issues and remediated them:
+
+1. `RemoteTargetSpec.endpoint` could otherwise be used to carry URI userinfo/query secret material;
+2. `OperationalChallengeRef` exposed a normal dataclass constructor even though `ChallengeManifest` was intended to remain the source of truth.
+
+Those fixes were revalidated in the later full code gate:
 
 ```text
-109 passed in 4.98s
+code HEAD: 8ff8f535f31072b643cbeb4bed957b6a09e36f47
+GitHub Actions run: 32045210634
+conclusion: success
+CTF pytest: 129 passed in 5.34s
 ```
 
-The same Actions run also completed successfully for:
-
-- Base pinned revision check;
-- Base regression;
-- Base invariant probes;
-- P1 crash semantic probe;
-- P2 x86_64 control-flow probe;
-- P3 local-proof probe;
-- P4 environment compatibility probe;
-- P5 remote behavior probe;
-- P6 external flag completion probe;
-- WP06 hypothesis/dedupe;
-- WP07 recovery/progress;
-- all existing WP08 evaluation probes.
+The same later workflow also preserved all existing Base/P1–P6/WP06–WP08 gates and the new WP11 controlled target-runner probes.
 
 ---
 
 ## 6. Negative Controls
 
-The new tests explicitly reject:
+The current tests explicitly reject:
 
 - incomplete artifact hash sets;
+- forged normal `OperationalChallengeRef(...)` construction;
 - credential construction with an untyped credential kind;
 - extra raw credential `value` field construction;
+- credential-bearing TCP URI userinfo;
+- TCP URI query/path/fragment token material;
 - local target hash mismatch;
 - local target referencing a non-admitted artifact;
 - remote endpoint not present in the manifest;
@@ -233,7 +242,7 @@ They also verify that equivalent contract construction produces the same fingerp
 
 **Result: PASS.**
 
-The full gate passed on the exact WP10 code commit. Existing CTF proof/recovery/evaluation authority was not modified.
+The initial WP10 gate passed, and the later WP10-hardening/WP11 combined gate also passed. Existing CTF proof/recovery/evaluation authority was not weakened.
 
 `ChallengeManifest` and `manifest_fingerprint()` remain the challenge identity source of truth.
 
@@ -241,7 +250,7 @@ The full gate passed on the exact WP10 code commit. Existing CTF proof/recovery/
 
 ## 8. Real-world Evidence
 
-No new live target execution is claimed by WP10.
+No live target execution is claimed by WP10 itself.
 
 The Dreamhack 103 evidence remains the real-world reason WP11 is necessary, but WP10 only establishes the contract boundary required to represent such a target truthfully.
 
@@ -249,15 +258,9 @@ The Dreamhack 103 evidence remains the real-world reason WP11 is necessary, but 
 
 ## 9. Unsupported / Open
 
-WP10 does not yet provide:
+WP10 does not itself provide execution. Native/QEMU/remote execution is WP11 scope, the real model controller is later scope, and the end-to-end solve loop is later scope.
 
-- Native/QEMU target execution;
-- runtime attestation/receipt;
-- migrated crash probe;
-- Dreamhack 103 registered P1 fact;
-- persistent remote session execution;
-- real model controller;
-- end-to-end solve loop.
+`CredentialRef` is a reference contract only. WP10 does not claim that keyring/session resolvers already exist or that a credential reference has been successfully resolved.
 
 ---
 
@@ -265,15 +268,17 @@ WP10 does not yet provide:
 
 ```text
 ChallengeManifest authority preserved              PASS
+normal forged challenge-ref construction blocked   PASS
 operational challenge identity deterministic       PASS
 local target admitted-artifact binding             PASS
 remote endpoint/network binding                    PASS
-credential values absent from contract             PASS
+credential-bearing TCP URI forms rejected          PASS
+credential values absent from normal value field   PASS
 invalid/unsupported variants fail closed           PASS
 SolveSpec deterministic fingerprint                PASS
-existing WP00-WP09 regression/probes               PASS
+existing regression/probes                         PASS
 ```
 
 **Decision:** `PASS — OPERATIONAL CONTRACT GATE`.
 
-The next code gate is WP11 Target Execution Layer. The first substantive WP11 objective is to move the existing native crash path behind an explicit target/runtime request and then represent the QEMU AArch64 execution path while keeping target identity and runtime identity separate.
+The next active roadmap item remains WP11 Target Execution Layer. The current WP11 status is intentionally tracked separately because its full exit gate requires more than the WP10 contract.
