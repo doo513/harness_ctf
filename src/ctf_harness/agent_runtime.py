@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from harness.core.controller import Decision
@@ -17,6 +18,15 @@ from ctf_harness.runtime import VerifiedCTFRuntime
 
 AGENT_CONTROL_SCHEMA = "ctf-agent-control-v1"
 CTF_CONTEXT_SCHEMA = "ctf-context-extension-v1"
+_STOP_REASON_PREVIEW_LIMIT = 512
+_STOP_SUBJECT_PREVIEW_LIMIT = 128
+
+
+def _bounded_untrusted_text(value: object, *, limit: int) -> tuple[str, str]:
+    text = str(value)
+    digest = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+    preview = text[:limit]
+    return preview, digest
 
 
 class AgentCTFRuntime(VerifiedCTFRuntime):
@@ -121,12 +131,25 @@ class AgentCTFRuntime(VerifiedCTFRuntime):
 
     def _stop_incomplete(self, *, reason: str, source: str, subject: str | None = None) -> None:
         facts_before = canonical_hash({key: value.dump() for key, value in self.state.facts.items()})
+        reason_preview, reason_sha256 = _bounded_untrusted_text(
+            reason,
+            limit=_STOP_REASON_PREVIEW_LIMIT,
+        )
+        subject_preview = None
+        subject_sha256 = None
+        if subject is not None:
+            subject_preview, subject_sha256 = _bounded_untrusted_text(
+                subject,
+                limit=_STOP_SUBJECT_PREVIEW_LIMIT,
+            )
         payload = {
             "schema_version": AGENT_CONTROL_SCHEMA,
             "run_intent": self.run_intent.value,
-            "reason": str(reason),
+            "reason_preview": reason_preview,
+            "reason_sha256": reason_sha256,
             "source": str(source),
-            "subject": subject,
+            "subject_preview": subject_preview,
+            "subject_sha256": subject_sha256,
             "completed": False,
             "completion_requested": bool(self.state.completion_requested),
             "completion_authority": "external_oracle_only",
