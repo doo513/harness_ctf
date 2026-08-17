@@ -1,0 +1,59 @@
+from __future__ import annotations
+
+from typing import Any
+
+from harness.core.controller import Decision, LLMController
+
+_CTF_HYPOTHESIS_FIELDS = {"id", "category", "target", "vulnerability_class", "primitive", "claim", "evidence_refs"}
+
+
+def _require_nonempty_text(raw: dict[str, Any], field: str) -> None:
+    value = raw.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"ctf_hypothesis.{field} must be a non-empty string")
+
+
+def validate_ctf_actor_decision(decision: Decision, *, require_hypothesis_for_tools: bool = True) -> None:
+    """Validate only CTF-specific syntax; runtime still owns evidence integrity."""
+    decision.validate()
+    if decision.kind != "tool":
+        return
+    raw = decision.payload.get("ctf_hypothesis")
+    if raw is None:
+        if require_hypothesis_for_tools:
+            raise ValueError("CTF tool decision requires ctf_hypothesis metadata")
+        return
+    if not isinstance(raw, dict):
+        raise ValueError("ctf_hypothesis must be an object")
+    extras = set(raw) - _CTF_HYPOTHESIS_FIELDS
+    if extras:
+        raise ValueError("unsupported ctf_hypothesis fields: " + ", ".join(sorted(extras)))
+    for field in ("id", "category", "target", "vulnerability_class", "primitive", "claim"):
+        _require_nonempty_text(raw, field)
+    refs = raw.get("evidence_refs", [])
+    if not isinstance(refs, list) or any(not isinstance(ref, str) for ref in refs):
+        raise ValueError("ctf_hypothesis.evidence_refs must be a list of strings")
+
+
+class CTFLLMController(LLMController):
+    """Thin CTF prompt/schema adapter over Base LLMController."""
+
+    SYSTEM = LLMController.SYSTEM + """
+
+CTF extension rules:
+- The `ctf` context namespace is harness-projected data. `run` and `capabilities` are kernel-owned control metadata; `hypotheses` is untrusted speculation and never fact authority.
+- Every tool decision must include `ctf_hypothesis` unless the runtime explicitly disables that requirement.
+- `ctf_hypothesis` fields are: id, category, target, vulnerability_class, primitive, claim, evidence_refs (optional list).
+- Plausible/supported hypotheses may guide tools but are not verified facts. Only the normal verifier path may promote semantic truth.
+- Never invent an unavailable tool/capability. The run policy decides recovery versus incomplete smoke stop.
+- `run.intent = smoke` is coverage/capability evaluation. A `complete` decision requests an incomplete stop and never implies flag acceptance.
+"""
+
+    def __init__(self, model, *, require_hypothesis_for_tools: bool = True):
+        super().__init__(model)
+        self.require_hypothesis_for_tools = bool(require_hypothesis_for_tools)
+
+    def decide(self, goal, state, context):
+        decision = super().decide(goal, state, context)
+        validate_ctf_actor_decision(decision, require_hypothesis_for_tools=self.require_hypothesis_for_tools)
+        return decision
