@@ -4,6 +4,7 @@ import hashlib
 import json
 import socket
 import threading
+import time
 
 import pytest
 
@@ -33,6 +34,36 @@ def _serve_once(listener: socket.socket, errors: list[str]) -> None:
             if received != REQUEST:
                 errors.append(f"unexpected request: {received!r}")
             conn.sendall(RESPONSE)
+    except Exception as exc:
+        errors.append(f"{type(exc).__name__}: {exc}")
+    finally:
+        listener.close()
+
+
+def _serve_delayed(listener: socket.socket, errors: list[str]) -> None:
+    try:
+        conn, _addr = listener.accept()
+        with conn:
+            received = conn.recv(4096)
+            if received != REQUEST:
+                errors.append(f"unexpected request: {received!r}")
+            conn.sendall(b"BANNER")
+            time.sleep(0.05)
+            conn.sendall(b"\nPROMPT> ")
+    except Exception as exc:
+        errors.append(f"{type(exc).__name__}: {exc}")
+    finally:
+        listener.close()
+
+
+def _serve_overread(listener: socket.socket, errors: list[str]) -> None:
+    try:
+        conn, _addr = listener.accept()
+        with conn:
+            received = conn.recv(4096)
+            if received != REQUEST:
+                errors.append(f"unexpected request: {received!r}")
+            conn.sendall(b"PROMPT> NEXT")
     except Exception as exc:
         errors.append(f"{type(exc).__name__}: {exc}")
     finally:
@@ -74,6 +105,16 @@ def _challenge(endpoint: str, *, allowed_network: bool = True) -> OperationalCha
     return OperationalChallengeRef.from_manifest(manifest, {"chal": ARTIFACT_SHA})
 
 
+def _runner_for(listener: socket.socket, port: int, **kwargs) -> RemoteTcpRunner:
+    endpoint = f"tcp://127.0.0.1:{port}"
+    return RemoteTcpRunner(
+        _challenge(endpoint),
+        RemoteTargetSpec(endpoint=endpoint, transport=RemoteTransport.TCP),
+        network_policy=_network(),
+        **kwargs,
+    )
+
+
 def test_remote_tcp_runner_pins_endpoint_and_hashes_transcript_without_plaintext() -> None:
     listener, port = _listener()
     errors: list[str] = []
@@ -84,7 +125,6 @@ def test_remote_tcp_runner_pins_endpoint_and_hashes_transcript_without_plaintext
     challenge = _challenge(endpoint)
     target = RemoteTargetSpec(endpoint=endpoint, transport=RemoteTransport.TCP)
     runner = RemoteTcpRunner(challenge, target, network_policy=_network())
-
     assert runner.pinned_ips == ("127.0.0.1",)
     assert runner.describe()["challenge_transport"] is True
     assert runner.describe()["general_internet"] is False
@@ -110,28 +150,71 @@ def test_remote_tcp_runner_pins_endpoint_and_hashes_transcript_without_plaintext
     assert RESPONSE.decode().strip() not in serialized
 
 
+def test_remote_tcp_session_accumulates_delayed_response_in_bounded_window() -> None:
+    listener, port = _listener()
+    errors: list[str] = []
+    thread = threading.Thread(target=_serve_delayed, args=(listener, errors), daemon=True)
+    thread.start()
+    runner = _runner_for(listener, port, timeout_seconds=1.0)
+    session = runner.open_session()
+    session.send(REQUEST)
+    observed = session.read(wait_seconds=0.30, idle_grace_seconds=0.10)
+    receipt = session.close()
+    thread.join(timeout=2.0)
+    assert errors == []
+    assert observed == b"BANNER\nPROMPT> "
+    assert receipt.received_bytes == len(observed)
+    assert receipt.received_sha256 == hashlib.sha256(observed).hexdigest()
+
+
+def test_remote_tcp_session_read_until_preserves_overread_without_double_hashing() -> None:
+    listener, port = _listener()
+    errors: list[str] = []
+    thread = threading.Thread(target=_serve_overread, args=(listener, errors), daemon=True)
+    thread.start()
+    runner = _runner_for(listener, port, timeout_seconds=1.0)
+    session = runner.open_session()
+    session.send(REQUEST)
+    first = session.read_until(b"> ", wait_seconds=0.5)
+    assert first == b"PROMPT> "
+    assert session.pending_bytes == len(b"NEXT")
+    second = session.read(4)
+    assert second == b"NEXT"
+    assert session.pending_bytes == 0
+    receipt = session.close()
+    thread.join(timeout=2.0)
+    network_bytes = b"PROMPT> NEXT"
+    assert errors == []
+    assert receipt.received_bytes == len(network_bytes)
+    assert receipt.received_sha256 == hashlib.sha256(network_bytes).hexdigest()
+
+
+def test_remote_tcp_session_read_until_timeout_preserves_partial_bytes() -> None:
+    listener, port = _listener()
+    errors: list[str] = []
+    thread = threading.Thread(target=_serve_once, args=(listener, errors), daemon=True)
+    thread.start()
+    runner = _runner_for(listener, port, timeout_seconds=1.0)
+    session = runner.open_session()
+    session.send(REQUEST)
+    with pytest.raises((EOFError, TimeoutError)):
+        session.read_until(b"NEVER", wait_seconds=0.3)
+    assert session.pending_bytes == len(RESPONSE)
+    assert session.read(len(RESPONSE)) == RESPONSE
+    session.close()
+    thread.join(timeout=2.0)
+    assert errors == []
+
+
 def test_remote_tcp_runner_requires_admission_and_network_authority() -> None:
     endpoint = "tcp://127.0.0.1:31337"
     target = RemoteTargetSpec(endpoint=endpoint, transport=RemoteTransport.TCP)
-
     with pytest.raises(ValueError, match="not admitted"):
-        RemoteTcpRunner(
-            _challenge("tcp://127.0.0.1:31338"),
-            target,
-            network_policy=_network(),
-        )
+        RemoteTcpRunner(_challenge("tcp://127.0.0.1:31338"), target, network_policy=_network())
     with pytest.raises(ValueError, match="does not allow network"):
-        RemoteTcpRunner(
-            _challenge(endpoint, allowed_network=False),
-            target,
-            network_policy=_network(),
-        )
+        RemoteTcpRunner(_challenge(endpoint, allowed_network=False), target, network_policy=_network())
     with pytest.raises(ValueError, match="blocks challenge transport"):
-        RemoteTcpRunner(
-            _challenge(endpoint),
-            target,
-            network_policy=_network(challenge_transport=False),
-        )
+        RemoteTcpRunner(_challenge(endpoint), target, network_policy=_network(challenge_transport=False))
 
 
 def test_remote_tcp_runner_never_receives_credential_bearing_endpoint() -> None:
@@ -151,7 +234,6 @@ def test_remote_tcp_runner_descriptor_exposes_only_credential_presence() -> None
     )
     runner = RemoteTcpRunner(_challenge(endpoint), target, network_policy=_network())
     serialized = json.dumps(runner.describe(), sort_keys=True)
-
     assert runner.describe()["credential_ref_present"] is True
     assert "private-session-key" not in serialized
 
@@ -161,17 +243,13 @@ def test_remote_tcp_session_limits_and_closed_state_fail_closed() -> None:
     errors: list[str] = []
     thread = threading.Thread(target=_serve_once, args=(listener, errors), daemon=True)
     thread.start()
-
-    endpoint = f"tcp://127.0.0.1:{port}"
-    runner = RemoteTcpRunner(
-        _challenge(endpoint),
-        RemoteTargetSpec(endpoint, RemoteTransport.TCP),
-        network_policy=_network(),
+    runner = _runner_for(
+        listener,
+        port,
         max_send_bytes=len(REQUEST),
         max_read_bytes=len(RESPONSE),
     )
     session = runner.open_session()
-
     with pytest.raises(ValueError, match="send exceeds"):
         session.send(REQUEST + b"x")
     session.send(REQUEST)
@@ -181,6 +259,5 @@ def test_remote_tcp_session_limits_and_closed_state_fail_closed() -> None:
     session.close()
     with pytest.raises(RuntimeError, match="closed"):
         session.send(b"x")
-
     thread.join(timeout=2.0)
     assert errors == []
