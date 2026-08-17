@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import tempfile
@@ -27,12 +28,15 @@ from ctf_harness.profile import VerifiedCTFProfile
 from ctf_harness.target.runners import NativeRunner
 
 TARGET = """#!/bin/sh
-if [ "$1" = "open-sesame-513" ]; then
+read value
+if [ "$value" = "open-sesame-513" ]; then
     printf 'CONTROLLED_SOLVE_OK_513\\n'
     exit 0
 fi
 exit 13
 """
+INPUT = b"open-sesame-513\n"
+EXPECTED = b"CONTROLLED_SOLVE_OK_513\n"
 
 
 class ControlledModel:
@@ -42,15 +46,21 @@ class ControlledModel:
             {
                 "kind": "tool",
                 "payload": {
-                    "tool": "argv",
-                    "args": {"argv": ["./chal", "open-sesame-513"]},
+                    "tool": "target_exec",
+                    "args": {
+                        "argv": [
+                            "chal",
+                            base64.b64encode(INPUT).decode("ascii"),
+                            "controlled-native",
+                        ]
+                    },
                     "ctf_hypothesis": {
                         "id": "H-wp13",
                         "category": "pwn",
                         "target": "chal",
                         "vulnerability_class": "controlled",
                         "primitive": "execute_fixture",
-                        "claim": "controlled target output should be observed",
+                        "claim": "runtime-bound controlled target output should be observed",
                         "evidence_refs": [],
                     },
                 },
@@ -66,9 +76,8 @@ class ControlledModel:
 
 
 class BindingFactory:
-    def __init__(self, *, root: Path, spec: SolveSpec, backend, model, oracle):
+    def __init__(self, *, root: Path, backend, model, oracle):
         self.root = root
-        self.spec = spec
         self.backend = backend
         self.model = model
         self.oracle = oracle
@@ -86,7 +95,7 @@ class BindingFactory:
         return SolveRuntimeBinding(
             profile=profile,
             goal=GoalContract(
-                goal="execute the controlled target and request independent acceptance",
+                goal="execute the controlled target through target_exec and request independent acceptance",
                 acceptance=["only the configured external oracle establishes completion"],
                 task_id=spec.challenge.challenge_id,
             ),
@@ -96,6 +105,32 @@ class BindingFactory:
             agent=spec.agent,
             oracle_policy_id=spec.oracle_policy.policy_id,
         )
+
+
+def _observed_expected_output(state) -> bool:
+    for observation in state.observations:
+        if not observation.ok or not isinstance(observation.preview, dict):
+            continue
+        wrapper_stdout = observation.preview.get("stdout")
+        if not isinstance(wrapper_stdout, str):
+            continue
+        try:
+            record = json.loads(wrapper_stdout.strip())
+        except json.JSONDecodeError:
+            continue
+        if record.get("kind") != "ctf_target_execution":
+            continue
+        if record.get("timed_out") is not False or record.get("returncode") != 0:
+            continue
+        if record.get("runtime", {}).get("runtime_kind") != "native":
+            continue
+        try:
+            stdout = base64.b64decode(record.get("stdout_b64", ""), validate=True)
+        except Exception:
+            continue
+        if stdout == EXPECTED:
+            return True
+    return False
 
 
 def main() -> int:
@@ -117,7 +152,7 @@ def main() -> int:
             category_hint="pwn",
             flag_format="flag{...}",
             allowed_network=False,
-            allowed_tools=("argv",),
+            allowed_tools=("target_exec",),
             runner_image_digest="sha256:" + "f" * 64,
             challenge_revision="r1",
             oracle_type="external",
@@ -155,18 +190,12 @@ def main() -> int:
 
         def oracle(*, goal, state, workspace):
             oracle_calls["count"] += 1
-            return any(
-                observation.ok
-                and isinstance(observation.preview, dict)
-                and observation.preview.get("stdout") == "CONTROLLED_SOLVE_OK_513\n"
-                for observation in state.observations
-            )
+            return _observed_expected_output(state)
 
         model = ControlledModel()
         receipt = SolveEngine(
             binding_factory=BindingFactory(
                 root=root,
-                spec=spec,
                 backend=backend,
                 model=model,
                 oracle=oracle,
@@ -192,10 +221,11 @@ def main() -> int:
             raise AssertionError("completion authority changed")
 
         print(json.dumps({
-            "probe": "ctf-solve-engine-live-controlled-v1",
+            "probe": "ctf-solve-engine-live-controlled-v2",
             "all_passed": True,
             "actual_production_llm_executed": False,
             "live_namespace_target_execution": True,
+            "target_exec_runtime_bound": True,
             "solve_spec_fingerprint": spec.fingerprint(),
             "target_sha256": target_sha,
             "runtime_profile_id": spec.target.runtime_profile_id,
