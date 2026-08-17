@@ -2,11 +2,10 @@ from harness.core.claim_contracts import ClaimContractRegistry, ClaimContractRul
 from harness.core.tools import SideEffect, ToolSpec, make_argv_tool, make_session_tool
 from harness.core.verification import VerificationContract, VerificationLevel, VerificationRequirement
 from harness.profiles.ctf import CTFProfile
-from ctf_harness.claims.pwn import PWN_CLAIM_SPECS
-from ctf_harness.domains.pwn import PwnPlaybook
+from ctf_harness.domains.module import DomainModuleRegistry
+from ctf_harness.domains.pwn import PwnDomainModule
 from ctf_harness.domains.registry import DomainRegistry
 from ctf_harness.domains.standard import CryptoPlaybook, ForensicsPlaybook, MiscPlaybook, ReversePlaybook, WebPlaybook
-from ctf_harness.progress.pwn import pwn_progress_snapshot
 from ctf_harness.sandbox import AnalysisSandbox
 from ctf_harness.target.runners import NativeRunner, TargetRunner
 from ctf_harness.tools.domain_recon import make_domain_recon_handler
@@ -14,19 +13,18 @@ from ctf_harness.tools.recon import make_pwn_recon_handler
 from ctf_harness.tools.crash import make_crash_probe_tool
 from ctf_harness.tools.control import make_control_probe_tool
 from ctf_harness.tools.target_exec import make_target_exec_tool
-from ctf_harness.verifiers.pwn.core import static_pwn_verifiers
-from ctf_harness.verifiers.pwn.crash import CrashReproducibleVerifier
-from ctf_harness.verifiers.pwn.control import ControlFlowVerifier
-from ctf_harness.verifiers.pwn.local import LocalExploitVerifier
-from ctf_harness.verifiers.pwn.environment import EnvironmentCompatibilityVerifier
-from ctf_harness.verifiers.pwn.remote import RemoteBehaviorVerifier
 
 _LEVEL = {name: getattr(VerificationLevel, name) for name in ("LOGICAL", "EXECUTION", "EXTERNAL_ORACLE")}
 
 
-def _default_domain_registry() -> DomainRegistry:
+def _default_semantic_modules() -> DomainModuleRegistry:
+    return DomainModuleRegistry((PwnDomainModule(),))
+
+
+def _default_domain_registry(semantic_modules: DomainModuleRegistry) -> DomainRegistry:
+    pwn = semantic_modules.require("pwn")
     return DomainRegistry((
-        PwnPlaybook(),
+        pwn.playbook,
         ReversePlaybook(),
         CryptoPlaybook(),
         WebPlaybook(),
@@ -49,6 +47,7 @@ class VerifiedCTFProfile(CTFProfile):
         default_target_profile_id: str = "native-default",
         expected_target_sha256: dict[str, str] | None = None,
         domain_registry: DomainRegistry | None = None,
+        semantic_modules: DomainModuleRegistry | None = None,
         active_domains: tuple[str, ...] = ("pwn",),
         analysis_sandbox: AnalysisSandbox | None = None,
     ):
@@ -68,7 +67,12 @@ class VerifiedCTFProfile(CTFProfile):
         self.default_target_profile_id = default_target_profile_id
         self.expected_target_sha256 = dict(expected_target_sha256 or {})
 
-        registry = domain_registry or _default_domain_registry()
+        modules = semantic_modules or _default_semantic_modules()
+        if not isinstance(modules, DomainModuleRegistry):
+            raise ValueError("semantic_modules must be DomainModuleRegistry")
+        self.semantic_modules = modules
+
+        registry = domain_registry or _default_domain_registry(modules)
         if not isinstance(registry, DomainRegistry):
             raise ValueError("domain_registry must be DomainRegistry")
         if not isinstance(active_domains, tuple) or not active_domains:
@@ -136,17 +140,12 @@ class VerifiedCTFProfile(CTFProfile):
     def verifiers(self):
         return [
             *super().verifiers(),
-            *static_pwn_verifiers(),
-            CrashReproducibleVerifier(),
-            ControlFlowVerifier(),
-            LocalExploitVerifier(),
-            EnvironmentCompatibilityVerifier(),
-            RemoteBehaviorVerifier(),
+            *self.semantic_modules.require("pwn").build_verifiers(),
         ]
 
     def claim_verification_registry(self):
         rules = []
-        for spec in PWN_CLAIM_SPECS:
+        for spec in self.semantic_modules.require("pwn").claim_specs():
             level = _LEVEL[spec.verification_level]
             contract = VerificationContract(
                 minimum_level=level,
@@ -163,4 +162,7 @@ class VerifiedCTFProfile(CTFProfile):
     def task_progress_snapshot(self, *, goal, state):
         facts = getattr(state, "facts", {})
         keys = facts.keys() if hasattr(facts, "keys") else (getattr(item, "key", "") for item in facts)
-        return pwn_progress_snapshot(keys, completed=bool(getattr(state, "completed", False)))
+        return self.semantic_modules.require("pwn").progress_snapshot(
+            keys,
+            completed=bool(getattr(state, "completed", False)),
+        )
