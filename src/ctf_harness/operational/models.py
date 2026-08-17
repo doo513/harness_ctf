@@ -74,12 +74,7 @@ def _validate_tcp_endpoint(endpoint: str) -> str:
 
 @dataclass(frozen=True, init=False)
 class OperationalChallengeRef:
-    """Immutable operational snapshot derived only from ChallengeManifest.
-
-    Direct construction is intentionally disabled so copied challenge identity,
-    artifact bindings, endpoints, and policy fields cannot become a second
-    authority beside `ChallengeManifest`.
-    """
+    """Immutable operational snapshot derived only from ChallengeManifest."""
 
     challenge_id: str
     challenge_revision: str
@@ -369,6 +364,71 @@ class OutputPolicy:
         }
 
 
+class RunIntent(str, Enum):
+    SOLVE = "solve"
+    SMOKE = "smoke"
+    COMPETITION = "competition"
+
+
+class ActorCompleteBehavior(str, Enum):
+    CHECK_EXTERNAL_ORACLE = "check_external_oracle"
+    HALT_INCOMPLETE = "halt_incomplete"
+
+
+class UnsupportedCapabilityBehavior(str, Enum):
+    RECOVER = "recover"
+    HALT_INCOMPLETE = "halt_incomplete"
+
+
+@dataclass(frozen=True)
+class TerminationPolicy:
+    """Control-only stop policy; never a completion authority."""
+
+    actor_complete: ActorCompleteBehavior
+    unsupported_capability: UnsupportedCapabilityBehavior
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.actor_complete, ActorCompleteBehavior):
+            raise ValueError("actor_complete must be ActorCompleteBehavior")
+        if not isinstance(self.unsupported_capability, UnsupportedCapabilityBehavior):
+            raise ValueError("unsupported_capability must be UnsupportedCapabilityBehavior")
+
+    @classmethod
+    def for_intent(cls, intent: RunIntent) -> "TerminationPolicy":
+        if not isinstance(intent, RunIntent):
+            raise ValueError("intent must be RunIntent")
+        if intent is RunIntent.SMOKE:
+            return cls(
+                ActorCompleteBehavior.HALT_INCOMPLETE,
+                UnsupportedCapabilityBehavior.HALT_INCOMPLETE,
+            )
+        return cls(
+            ActorCompleteBehavior.CHECK_EXTERNAL_ORACLE,
+            UnsupportedCapabilityBehavior.RECOVER,
+        )
+
+    def validate_for_intent(self, intent: RunIntent) -> None:
+        if not isinstance(intent, RunIntent):
+            raise ValueError("run_intent must be RunIntent")
+        required_complete = (
+            ActorCompleteBehavior.HALT_INCOMPLETE
+            if intent is RunIntent.SMOKE
+            else ActorCompleteBehavior.CHECK_EXTERNAL_ORACLE
+        )
+        if self.actor_complete is not required_complete:
+            raise ValueError(
+                f"{intent.value} run requires actor_complete={required_complete.value}; "
+                "run policy cannot weaken or redefine completion authority"
+            )
+
+    def descriptor(self) -> dict[str, str]:
+        return {
+            "actor_complete": self.actor_complete.value,
+            "unsupported_capability": self.unsupported_capability.value,
+            "completion_authority": "external_oracle_only",
+        }
+
+
 @dataclass(frozen=True)
 class SolveSpec:
     challenge: OperationalChallengeRef
@@ -378,6 +438,8 @@ class SolveSpec:
     network_policy: NetworkPolicy
     oracle_policy: OraclePolicy
     output_policy: OutputPolicy = OutputPolicy()
+    run_intent: RunIntent = RunIntent.SOLVE
+    termination_policy: TerminationPolicy | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.challenge, OperationalChallengeRef):
@@ -394,6 +456,15 @@ class SolveSpec:
             raise ValueError("oracle_policy must be OraclePolicy")
         if not isinstance(self.output_policy, OutputPolicy):
             raise ValueError("output_policy must be OutputPolicy")
+        if not isinstance(self.run_intent, RunIntent):
+            raise ValueError("run_intent must be RunIntent")
+        policy = self.termination_policy
+        if policy is None:
+            policy = TerminationPolicy.for_intent(self.run_intent)
+            object.__setattr__(self, "termination_policy", policy)
+        if not isinstance(policy, TerminationPolicy):
+            raise ValueError("termination_policy must be TerminationPolicy")
+        policy.validate_for_intent(self.run_intent)
         if self.oracle_policy.oracle_type != self.challenge.oracle_type:
             raise ValueError("solve oracle authority differs from admitted challenge manifest")
 
@@ -410,6 +481,7 @@ class SolveSpec:
                 raise ValueError("solve network policy blocks challenge transport")
 
     def descriptor(self) -> dict[str, Any]:
+        assert self.termination_policy is not None
         return {
             "challenge": self.challenge.descriptor(),
             "target": self.target.descriptor(),
@@ -418,6 +490,8 @@ class SolveSpec:
             "network_policy": self.network_policy.descriptor(),
             "oracle_policy": self.oracle_policy.descriptor(),
             "output_policy": self.output_policy.descriptor(),
+            "run_intent": self.run_intent.value,
+            "termination_policy": self.termination_policy.descriptor(),
         }
 
     def fingerprint(self) -> str:
