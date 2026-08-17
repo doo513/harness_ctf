@@ -101,9 +101,12 @@ class RuntimeBenchmarkExecutor:
             raise ValueError("binding_factory must return RuntimeBinding")
         binding.run_dir.mkdir(parents=True, exist_ok=True)
 
+        # Base 0.9.1 owns runtime termination through hard_max_steps / hard_wall_seconds.
+        # The evaluation contract keeps the public max_steps/max_wall_seconds vocabulary,
+        # but the adapter must translate it rather than invent Base constructor fields.
         budget = Budget(
-            max_steps=spec.experiment.max_steps,
-            max_wall_seconds=float(spec.experiment.max_wall_seconds),
+            hard_max_steps=spec.experiment.max_steps,
+            hard_wall_seconds=float(spec.experiment.max_wall_seconds),
         )
         runtime = build_runtime_for_arm(
             arm=spec.arm,
