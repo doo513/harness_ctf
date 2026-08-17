@@ -5,9 +5,9 @@ from typing import Sequence
 from harness.core.sandbox import ExecutionResult,IsolationAttestation
 from harness.core.tools import SandboxedArgvToolSpec,SideEffect
 _PROBE_SCRIPT=r'''import base64,hashlib,json,pathlib,subprocess,sys
-path=pathlib.Path(sys.argv[1]);data=base64.b64decode(sys.argv[2],validate=True);timeout=float(sys.argv[3]);target=path.read_bytes();body={"schema_version":1,"kind":"pwn_crash_probe","target_sha256":hashlib.sha256(target).hexdigest(),"input_sha256":hashlib.sha256(data).hexdigest(),"timed_out":False,"returncode":None,"signal":None,"stdout_sha256":None,"stderr_sha256":None}
+exec_path=sys.argv[1];path=pathlib.Path(exec_path);data=base64.b64decode(sys.argv[2],validate=True);timeout=float(sys.argv[3]);target=path.read_bytes();body={"schema_version":1,"kind":"pwn_crash_probe","target_sha256":hashlib.sha256(target).hexdigest(),"input_sha256":hashlib.sha256(data).hexdigest(),"timed_out":False,"returncode":None,"signal":None,"stdout_sha256":None,"stderr_sha256":None}
 try:
- p=subprocess.run([str(path)],input=data,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=timeout,shell=False);body["returncode"]=p.returncode;body["signal"]=-p.returncode if p.returncode<0 else None;body["stdout_sha256"]=hashlib.sha256(p.stdout).hexdigest();body["stderr_sha256"]=hashlib.sha256(p.stderr).hexdigest()
+ p=subprocess.run([exec_path],input=data,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=timeout,shell=False);body["returncode"]=p.returncode;body["signal"]=-p.returncode if p.returncode<0 else None;body["stdout_sha256"]=hashlib.sha256(p.stdout).hexdigest();body["stderr_sha256"]=hashlib.sha256(p.stderr).hexdigest()
 except subprocess.TimeoutExpired as e:
  body["timed_out"]=True;body["stdout_sha256"]=hashlib.sha256(e.stdout or b"").hexdigest();body["stderr_sha256"]=hashlib.sha256(e.stderr or b"").hexdigest()
 print(json.dumps(body,sort_keys=True,separators=(",",":")))'''
