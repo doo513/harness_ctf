@@ -1,8 +1,14 @@
 # Evidence-Gated Verification Index
 
-Baseline implementation commit validated by CI: `c8f87c62c2fb58fd48438e3b8621e0c5cdb58200`  
-Pinned Core: `doo513/base_harness@20079ffd90cc063958f084da8286e05f38ccdef0`  
-Integration CI: GitHub Actions run `32012528321` — `success`.
+Latest implementation code gate:
+
+- CTF code commit: `2353d0a045acf5a5b47acd4691370e872e2bef0a`
+- Pinned Core: `doo513/base_harness@75834ac1ecb6c022771c2efee1f19495f356ee76`
+- GitHub Actions run: `32037308514` — `success`
+- Base regression: `220 passed, 7 skipped`
+- CTF regression: `92 passed in 5.06s`
+
+The same full gate passed the Base invariant probes, P1–P6 proof/semantic probes, WP06 hypothesis/dedupe, WP07 recovery/progress, and the WP08 arm/integrity/ingestion/executor/runtime-backed evaluation probes.
 
 | Work package | Status | Report |
 |---|---|---|
@@ -14,5 +20,33 @@ Integration CI: GitHub Actions run `32012528321` — `success`.
 | WP05 Proof Pipeline | PARTIAL | `WP05_PROOF_PIPELINE_VERIFICATION.md` |
 | WP06 Hypothesis / Dedupe | PARTIAL | `WP06_HYPOTHESIS_DEDUPE_VERIFICATION.md` |
 | WP07 Recovery / Progress | PARTIAL | `WP07_RECOVERY_PROGRESS_VERIFICATION.md` |
+| WP08 Evaluation / Benchmark Infrastructure | PASS — controlled infrastructure only | `WP08_EVALUATION_VERIFICATION.md` |
+| WP08 Remediation History | CLOSED at code gate; documentation HEAD revalidated separately | `WP08_REMEDIATION_LOG.md` |
 
-`PASS` means the scoped exit gate is exercised by executable evidence. `PARTIAL` means implemented logic exists but at least one roadmap exit condition is still open. No report uses code existence alone as proof of CTF effectiveness.
+## Status semantics
+
+`PASS` means the scoped exit gate is exercised by executable evidence. It does not imply broader real-world effectiveness.
+
+`PARTIAL` means implemented logic exists and controlled evidence may already pass, but at least one roadmap exit condition remains open.
+
+For WP08 specifically:
+
+```text
+controlled evaluation infrastructure = PASS
+real fresh/private Pwn A/B effectiveness = NOT ESTABLISHED
+```
+
+No report uses code existence, synthetic fixtures, self-reported completion, or documentation text alone as proof of CTF effectiveness.
+
+## Current next evidence gate
+
+Do not expand Skills, other CTF domains, or multi-agent orchestration as an effectiveness claim before the first real Pwn pilot.
+
+Next required evidence:
+
+1. supply and independently review a fresh/private 10–15 challenge Pwn corpus;
+2. freeze case/artifact/model/controller/tool/sandbox/oracle/budget identity;
+3. run canonical Minimal vs Verified A/B;
+4. independently adjudicate flags/facts;
+5. report success, proof level, false completion/fact, repeated failure, tool/step/time/token/cost metrics;
+6. only then decide whether WP09-style follow-on work is justified — **without creating a new numbered Base stage**.
