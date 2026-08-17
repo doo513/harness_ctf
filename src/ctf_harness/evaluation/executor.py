@@ -35,14 +35,7 @@ class BenchmarkExecutorDescriptor:
     challenge_transport_only: bool
 
     def __post_init__(self) -> None:
-        for field in (
-            "executor_id",
-            "model_id",
-            "model_revision",
-            "controller_revision",
-            "sandbox_id",
-            "oracle_policy_id",
-        ):
+        for field in ("executor_id", "model_id", "model_revision", "controller_revision", "sandbox_id", "oracle_policy_id"):
             value = getattr(self, field)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{field} must be a non-empty string")
@@ -52,12 +45,7 @@ class BenchmarkExecutorDescriptor:
             raise ValueError("tool_inventory must be an immutable tuple of non-empty strings")
         if len(set(self.tool_inventory)) != len(self.tool_inventory):
             raise ValueError("tool_inventory must be unique")
-        for field in (
-            "web_search_enabled",
-            "external_retrieval_enabled",
-            "general_internet_egress_enabled",
-            "challenge_transport_only",
-        ):
+        for field in ("web_search_enabled", "external_retrieval_enabled", "general_internet_egress_enabled", "challenge_transport_only"):
             if not isinstance(getattr(self, field), bool):
                 raise ValueError(f"{field} must be boolean")
 
@@ -95,12 +83,7 @@ class ExecutionBoundaryAttestation:
         _require_sha256(self.executor_fingerprint, field="attestation executor_fingerprint")
         if not isinstance(self.sandbox_id, str) or not self.sandbox_id.strip():
             raise ValueError("attestation sandbox_id must be a non-empty string")
-        for field in (
-            "web_search_blocked",
-            "external_retrieval_blocked",
-            "general_internet_egress_blocked",
-            "challenge_transport_scoped",
-        ):
+        for field in ("web_search_blocked", "external_retrieval_blocked", "general_internet_egress_blocked", "challenge_transport_scoped"):
             if not isinstance(getattr(self, field), bool):
                 raise ValueError(f"attestation {field} must be boolean")
 
@@ -148,13 +131,7 @@ def _validate_executor_contract(spec: BenchmarkRunSpec, descriptor: BenchmarkExe
     expected_tools = tuple(sorted(experiment.tool_inventory))
     observed_tools = tuple(sorted(descriptor.tool_inventory))
     mismatches = []
-    for field in (
-        "model_id",
-        "model_revision",
-        "controller_revision",
-        "sandbox_id",
-        "oracle_policy_id",
-    ):
+    for field in ("model_id", "model_revision", "controller_revision", "sandbox_id", "oracle_policy_id"):
         if getattr(descriptor, field) != getattr(experiment, field):
             mismatches.append(field)
     if observed_tools != expected_tools:
@@ -193,6 +170,19 @@ def _validate_boundary(
             raise ValueError("research executor network access must be scoped to challenge transport")
 
 
+def _validate_outcome_budget(spec: BenchmarkRunSpec, outcome: RawRunOutcome) -> None:
+    experiment = spec.experiment
+    if outcome.steps > experiment.max_steps:
+        raise ValueError("executor outcome exceeds frozen max_steps budget")
+    if outcome.wall_seconds > float(experiment.max_wall_seconds):
+        raise ValueError("executor outcome exceeds frozen max_wall_seconds budget")
+    if experiment.max_tokens is not None:
+        if outcome.input_tokens is None or outcome.output_tokens is None:
+            raise ValueError("token-bounded experiment requires measured input/output token counts")
+        if outcome.input_tokens + outcome.output_tokens > experiment.max_tokens:
+            raise ValueError("executor outcome exceeds frozen max_tokens budget")
+
+
 def execute_planned_run(
     *,
     plan: BenchmarkPlan,
@@ -203,10 +193,11 @@ def execute_planned_run(
 ) -> BenchmarkRunRecord:
     """Execute one exact planned run only after contract/boundary validation.
 
-    The executor is still responsible for actually enforcing its sandbox and
-    producing the attestation evidence. This function prevents execution when
-    the supplied descriptor/attestation does not prove the required boundary.
-    Final success remains independent adjudication, never executor self-report.
+    The executor is responsible for actually enforcing its sandbox and producing
+    boundary evidence. This function refuses to call it when descriptor and
+    attestation do not establish the declared boundary. It also rejects any
+    returned outcome that exceeds the frozen experiment budget. Final success
+    remains independent adjudication, never executor self-report.
     """
     _require_spec_in_plan(plan, spec)
     descriptor = executor.descriptor()
@@ -220,6 +211,7 @@ def execute_planned_run(
         raise ValueError("executor must return ExecutorRunReceipt")
     if receipt.executor_id != descriptor.executor_id:
         raise ValueError("executor receipt identity differs from validated executor")
+    _validate_outcome_budget(spec, receipt.outcome)
 
     adjudication = adjudicator.adjudicate(
         spec,
