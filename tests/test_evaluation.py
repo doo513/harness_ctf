@@ -7,15 +7,12 @@ import pytest
 from harness.core.storage import IntegrityError
 
 from ctf_harness.evaluation.corpus import (
+    CorpusLock,
     case_from_manifest,
     freeze_corpus,
     validate_first_pwn_pilot,
 )
-from ctf_harness.evaluation.metrics import (
-    aggregate,
-    build_run_record,
-    compare_paired_ab,
-)
+from ctf_harness.evaluation.metrics import aggregate, build_run_record, compare_paired_ab
 from ctf_harness.evaluation.models import (
     ArmConfig,
     BenchmarkArm,
@@ -28,16 +25,13 @@ from ctf_harness.evaluation.models import (
 )
 from ctf_harness.evaluation.policy import LeakagePolicy, assert_mode_policy
 from ctf_harness.evaluation.results import BenchmarkResultBundle
-from ctf_harness.evaluation.runner import (
-    BenchmarkPlan,
-    assert_comparable_pair,
-    paired_specs,
-)
+from ctf_harness.evaluation.runner import BenchmarkPlan, assert_comparable_pair, paired_specs
 from ctf_harness.manifest.models import ChallengeManifest
 from ctf_harness.proof.models import ProofLevel
 
 
 RUNNER = "sha256:" + "a" * 64
+ADJUDICATION_SHA = "1" * 64
 
 
 def _manifest(index: int, *, mode="research", revision="r1") -> ChallengeManifest:
@@ -99,6 +93,23 @@ def _outcome(*, completed=False, facts=(), failures=(), tools=0, steps=0, wall=1
     )
 
 
+def _adjudication(
+    *,
+    accepted=False,
+    proof=None,
+    invalid=(),
+    evidence_sha=ADJUDICATION_SHA,
+    adjudicator_id="fixture-independent-adjudicator",
+):
+    return IndependentAdjudication(
+        adjudicator_id=adjudicator_id,
+        evidence_sha256=evidence_sha,
+        oracle_accepted=accepted,
+        highest_proof_level=proof,
+        invalid_verified_fact_keys=tuple(invalid),
+    )
+
+
 def test_research_leakage_policy_is_fail_closed():
     policy = LeakagePolicy.research()
     assert policy.web_enabled is False
@@ -118,6 +129,15 @@ def test_research_leakage_policy_is_fail_closed():
         )
     with pytest.raises(ValueError, match="mode must match"):
         assert_mode_policy(EvaluationMode.COMPETITION, policy)
+    with pytest.raises(ValueError, match="must be EvaluationMode"):
+        LeakagePolicy(
+            mode="research",
+            web_enabled=False,
+            exact_challenge_name_search_allowed=False,
+            writeup_search_allowed=False,
+            direct_flag_search_allowed=False,
+            external_provenance_required=True,
+        )
 
 
 def test_case_identity_is_derived_from_manifest_revision_and_frozen():
@@ -129,6 +149,23 @@ def test_case_identity_is_derived_from_manifest_revision_and_frozen():
     assert corpus.require_case(one.case_id, one.manifest_fingerprint) == one
     with pytest.raises(ValueError, match="fingerprint differs"):
         corpus.require_case(one.case_id, changed.manifest_fingerprint)
+
+
+def test_corpus_and_plan_require_immutable_tuple_collections():
+    case = _case(1)
+    with pytest.raises(ValueError, match="immutable tuple"):
+        CorpusLock(
+            name="mutable",
+            revision="r1",
+            mode=EvaluationMode.RESEARCH,
+            cases=[case],
+            unpublished=True,
+        )
+
+    corpus = _research_corpus([case])
+    minimal, verified = paired_specs(case=case, experiment=_experiment())
+    with pytest.raises(ValueError, match="immutable tuple"):
+        BenchmarkPlan(corpus, LeakagePolicy.research(), [minimal, verified])
 
 
 def test_first_pwn_pilot_qualification_requires_10_to_15_unpublished_research_pwn_cases():
@@ -192,6 +229,15 @@ def test_first_ab_plan_requires_exact_frozen_case_and_canonical_two_arms():
         BenchmarkPlan(corpus, LeakagePolicy.research(), (minimal, noncanonical_verified))
 
 
+def test_independent_adjudication_requires_identity_and_evidence_hash():
+    with pytest.raises(ValueError, match="adjudicator_id"):
+        _adjudication(adjudicator_id="")
+    with pytest.raises(ValueError, match="evidence_sha256"):
+        _adjudication(evidence_sha="not-a-sha")
+    with pytest.raises(ValueError, match="non-P6"):
+        _adjudication(accepted=True, proof=ProofLevel.P5_REMOTE)
+
+
 def test_independent_oracle_is_success_authority_and_false_completion_is_counted():
     case = _case(1)
     minimal, verified = paired_specs(case=case, experiment=_experiment())
@@ -205,22 +251,18 @@ def test_independent_oracle_is_success_authority_and_false_completion_is_counted
             steps=12,
             wall=20.0,
         ),
-        IndependentAdjudication(
-            oracle_accepted=False,
-            highest_proof_level=ProofLevel.P2_CONTROL,
-        ),
+        _adjudication(accepted=False, proof=ProofLevel.P2_CONTROL),
     )
     assert minimal_record.success is False
     assert minimal_record.false_completion is True
     assert minimal_record.repeated_failure_count == 2
+    assert minimal_record.adjudicator_id == "fixture-independent-adjudicator"
+    assert minimal_record.adjudication_evidence_sha256 == ADJUDICATION_SHA
 
     verified_record = build_run_record(
         verified,
         _outcome(completed=True, tools=5, steps=9, wall=14.0),
-        IndependentAdjudication(
-            oracle_accepted=True,
-            highest_proof_level=ProofLevel.P6_ACCEPTED,
-        ),
+        _adjudication(accepted=True, proof=ProofLevel.P6_ACCEPTED, evidence_sha="2" * 64),
     )
     assert verified_record.success is True
     assert verified_record.false_completion is False
@@ -241,10 +283,9 @@ def test_false_fact_metric_requires_independent_labels_to_reference_reported_fac
     record = build_run_record(
         verified,
         _outcome(facts=("ctf.pwn.arch", "ctf.pwn.control_flow")),
-        IndependentAdjudication(
-            oracle_accepted=False,
-            highest_proof_level=ProofLevel.P1_PRIMITIVE,
-            invalid_verified_fact_keys=("ctf.pwn.control_flow",),
+        _adjudication(
+            proof=ProofLevel.P1_PRIMITIVE,
+            invalid=("ctf.pwn.control_flow",),
         ),
     )
     assert record.false_fact_count == 1
@@ -253,10 +294,9 @@ def test_false_fact_metric_requires_independent_labels_to_reference_reported_fac
         build_run_record(
             verified,
             _outcome(facts=("ctf.pwn.arch",)),
-            IndependentAdjudication(
-                oracle_accepted=False,
-                highest_proof_level=ProofLevel.P0_SURFACE,
-                invalid_verified_fact_keys=("ctf.pwn.remote_behavior",),
+            _adjudication(
+                proof=ProofLevel.P0_SURFACE,
+                invalid=("ctf.pwn.remote_behavior",),
             ),
         )
 
@@ -264,11 +304,7 @@ def test_false_fact_metric_requires_independent_labels_to_reference_reported_fac
 def test_research_and_competition_results_cannot_be_aggregated_or_compared():
     research_case = _case(1)
     _, research_spec = paired_specs(case=research_case, experiment=_experiment())
-    research_record = build_run_record(
-        research_spec,
-        _outcome(),
-        IndependentAdjudication(False, None),
-    )
+    research_record = build_run_record(research_spec, _outcome(), _adjudication())
 
     competition_case = _case(2, mode="competition")
     competition_spec = BenchmarkRunSpec(
@@ -279,7 +315,7 @@ def test_research_and_competition_results_cannot_be_aggregated_or_compared():
     competition_record = build_run_record(
         competition_spec,
         _outcome(),
-        IndependentAdjudication(False, None),
+        _adjudication(evidence_sha="3" * 64),
     )
 
     with pytest.raises(ValueError, match="must not be aggregated"):
@@ -288,15 +324,15 @@ def test_research_and_competition_results_cannot_be_aggregated_or_compared():
         compare_paired_ab((research_record, competition_record))
 
 
-def test_result_bundle_requires_exact_plan_runs_and_detects_tamper(tmp_path):
+def test_result_bundle_requires_exact_plan_runs_adjudication_identity_and_detects_tamper(tmp_path):
     case = _case(1)
     corpus = _research_corpus([case])
     minimal, verified = paired_specs(case=case, experiment=_experiment())
     plan = BenchmarkPlan(corpus, LeakagePolicy.research(), (minimal, verified))
 
     records = (
-        build_run_record(minimal, _outcome(), IndependentAdjudication(False, None)),
-        build_run_record(verified, _outcome(), IndependentAdjudication(False, None)),
+        build_run_record(minimal, _outcome(), _adjudication(evidence_sha="4" * 64)),
+        build_run_record(verified, _outcome(), _adjudication(evidence_sha="5" * 64)),
     )
     bundle = BenchmarkResultBundle.finalize(plan, records)
     path = tmp_path / "results.json"
@@ -307,9 +343,13 @@ def test_result_bundle_requires_exact_plan_runs_and_detects_tamper(tmp_path):
         expected_plan_fingerprint=plan.fingerprint(),
     )
     assert len(verified_body["records"]) == 2
+    assert verified_body["records"][0]["adjudicator_id"]
+    assert len(verified_body["records"][0]["adjudication_evidence_sha256"]) == 64
 
     with pytest.raises(ValueError, match="exactly match plan"):
         BenchmarkResultBundle.finalize(plan, records[:1])
+    with pytest.raises(ValueError, match="immutable tuple"):
+        BenchmarkResultBundle(plan.fingerprint(), list(records))
 
     raw = path.read_text(encoding="utf-8")
     path.write_text(raw.replace('"tool_calls": 0', '"tool_calls": 1', 1), encoding="utf-8")
