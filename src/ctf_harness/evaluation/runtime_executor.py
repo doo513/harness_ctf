@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -68,6 +70,49 @@ def _file_sha256(path: Path) -> str | None:
     return digest.hexdigest()
 
 
+def _load_durable_metrics(path: Path, *, runtime, state) -> dict:
+    """Load the Base-produced metrics.json and bind it back to the returned state.
+
+    Base computes wall_seconds only in the persisted metrics snapshot; the mutable
+    runtime.metrics dictionary is not the authoritative wall-time source.
+    """
+    if not path.exists() or not path.is_file():
+        raise ValueError("runtime did not persist metrics.json")
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("runtime metrics.json is unreadable or invalid JSON") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("runtime metrics.json must contain an object")
+
+    required = ("run_id", "steps", "tool_calls", "completed", "wall_seconds")
+    missing = [key for key in required if key not in raw]
+    if missing:
+        raise ValueError("runtime metrics.json missing required fields: " + ", ".join(missing))
+
+    if raw["run_id"] != getattr(runtime, "run_id", None):
+        raise ValueError("runtime metrics.json is bound to a different Base runtime run_id")
+    if not isinstance(raw["steps"], int) or isinstance(raw["steps"], bool) or raw["steps"] < 0:
+        raise ValueError("runtime metrics steps must be a non-negative integer")
+    if not isinstance(raw["tool_calls"], int) or isinstance(raw["tool_calls"], bool) or raw["tool_calls"] < 0:
+        raise ValueError("runtime metrics tool_calls must be a non-negative integer")
+    if not isinstance(raw["completed"], bool):
+        raise ValueError("runtime metrics completed must be boolean")
+    if (
+        not isinstance(raw["wall_seconds"], (int, float))
+        or isinstance(raw["wall_seconds"], bool)
+        or not math.isfinite(float(raw["wall_seconds"]))
+        or float(raw["wall_seconds"]) < 0
+    ):
+        raise ValueError("runtime metrics wall_seconds must be finite and non-negative")
+
+    if raw["steps"] != int(state.step):
+        raise ValueError("runtime metrics steps disagree with returned HarnessState")
+    if raw["completed"] is not bool(state.completed):
+        raise ValueError("runtime metrics completed disagrees with returned HarnessState")
+    return raw
+
+
 class RuntimeBenchmarkExecutor:
     """BenchmarkRunExecutor backed by the actual Base/Verified CTF runtime paths."""
 
@@ -118,6 +163,11 @@ class RuntimeBenchmarkExecutor:
             budget=budget,
         )
         state = runtime.run()
+        durable_metrics = _load_durable_metrics(
+            binding.run_dir / "metrics.json",
+            runtime=runtime,
+            state=state,
+        )
 
         usage = (
             self._usage_provider.read_usage(spec, runtime)
@@ -133,12 +183,12 @@ class RuntimeBenchmarkExecutor:
             if isinstance(item, dict) and item.get("signature")
         )
         outcome = RawRunOutcome(
-            completed_claimed=bool(state.completed),
+            completed_claimed=bool(durable_metrics["completed"]),
             verified_fact_keys=tuple(sorted(str(key) for key in state.facts)),
             failure_signatures=failure_signatures,
-            tool_calls=int(runtime.metrics.get("tool_calls", 0)),
-            steps=int(state.step),
-            wall_seconds=float(runtime.metrics.get("wall_seconds", 0.0)),
+            tool_calls=int(durable_metrics["tool_calls"]),
+            steps=int(durable_metrics["steps"]),
+            wall_seconds=float(durable_metrics["wall_seconds"]),
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
             cost_usd=usage.cost_usd,
