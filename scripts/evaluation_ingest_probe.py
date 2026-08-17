@@ -33,7 +33,7 @@ def write_fixture(root: Path) -> Path:
         "allowed_tools": ["argv", "session"],
         "runner_image_digest": RUNNER,
         "challenge_revision": "r1",
-        "oracle_type": "external_flag",
+        "oracle_type": "external",
         "benchmark_policy": "research",
     }
     (root / manifest_rel).write_text(json.dumps(manifest), encoding="utf-8")
@@ -87,7 +87,7 @@ def main() -> int:
         assert traversal_rejected
 
         print(json.dumps({
-            "probe": "ctf-evaluation-corpus-ingestion-controlled-v1",
+            "probe": "ctf-evaluation-corpus-ingestion-controlled-v2",
             "all_passed": True,
             "fixture_only": True,
             "actual_private_corpus": False,
@@ -97,6 +97,7 @@ def main() -> int:
             "artifact_tamper_rejected": tamper_rejected,
             "path_traversal_rejected": traversal_rejected,
             "stable_ingestion_fingerprint": True,
+            "external_oracle_contract_preserved": True,
             "freshness_independently_proven": False,
             "effectiveness_measured": False,
         }, sort_keys=True, indent=2))
