@@ -2,21 +2,39 @@ from harness.core.claim_contracts import ClaimContractRegistry, ClaimContractRul
 from harness.core.tools import SideEffect, ToolSpec, make_argv_tool, make_session_tool
 from harness.core.verification import VerificationContract, VerificationLevel, VerificationRequirement
 from harness.profiles.ctf import CTFProfile
-from ctf_harness.claims.pwn import PWN_CLAIM_SPECS
-from ctf_harness.progress.pwn import pwn_progress_snapshot
+from ctf_harness.domains.module import DomainModuleRegistry
+from ctf_harness.domains.pwn import PwnDomainModule
+from ctf_harness.domains.registry import DomainRegistry
+from ctf_harness.domains.standard import CryptoPlaybook, ForensicsPlaybook, MiscPlaybook, ReversePlaybook, WebPlaybook
+from ctf_harness.sandbox import AnalysisSandbox
+from ctf_harness.target.remote import RemoteTcpRunner
 from ctf_harness.target.runners import NativeRunner, TargetRunner
+from ctf_harness.tools.capabilities import CapabilityCatalog
+from ctf_harness.tools.domain_recon import make_domain_recon_handler
 from ctf_harness.tools.recon import make_pwn_recon_handler
 from ctf_harness.tools.crash import make_crash_probe_tool
 from ctf_harness.tools.control import make_control_probe_tool
+from ctf_harness.tools.remote_tcp import RemoteTcpToolRuntime
+from ctf_harness.tools.scoped_http import ChallengeHttpClient
 from ctf_harness.tools.target_exec import make_target_exec_tool
-from ctf_harness.verifiers.pwn.core import static_pwn_verifiers
-from ctf_harness.verifiers.pwn.crash import CrashReproducibleVerifier
-from ctf_harness.verifiers.pwn.control import ControlFlowVerifier
-from ctf_harness.verifiers.pwn.local import LocalExploitVerifier
-from ctf_harness.verifiers.pwn.environment import EnvironmentCompatibilityVerifier
-from ctf_harness.verifiers.pwn.remote import RemoteBehaviorVerifier
 
 _LEVEL = {name: getattr(VerificationLevel, name) for name in ("LOGICAL", "EXECUTION", "EXTERNAL_ORACLE")}
+
+
+def _default_semantic_modules() -> DomainModuleRegistry:
+    return DomainModuleRegistry((PwnDomainModule(),))
+
+
+def _default_domain_registry(semantic_modules: DomainModuleRegistry) -> DomainRegistry:
+    pwn = semantic_modules.require("pwn")
+    return DomainRegistry((
+        pwn.playbook,
+        ReversePlaybook(),
+        CryptoPlaybook(),
+        WebPlaybook(),
+        ForensicsPlaybook(),
+        MiscPlaybook(),
+    ))
 
 
 class VerifiedCTFProfile(CTFProfile):
@@ -32,6 +50,13 @@ class VerifiedCTFProfile(CTFProfile):
         target_runners: dict[str, TargetRunner] | None = None,
         default_target_profile_id: str = "native-default",
         expected_target_sha256: dict[str, str] | None = None,
+        domain_registry: DomainRegistry | None = None,
+        semantic_modules: DomainModuleRegistry | None = None,
+        active_domains: tuple[str, ...] = ("pwn",),
+        analysis_sandbox: AnalysisSandbox | None = None,
+        capability_catalog: CapabilityCatalog | None = None,
+        challenge_http: ChallengeHttpClient | None = None,
+        remote_tcp_runner: RemoteTcpRunner | None = None,
     ):
         super().__init__(workspace=workspace, external_oracle=external_oracle, execution_backend=execution_backend)
         self.flag_completion_oracle = flag_completion_oracle
@@ -48,6 +73,39 @@ class VerifiedCTFProfile(CTFProfile):
         self.target_runners = configured
         self.default_target_profile_id = default_target_profile_id
         self.expected_target_sha256 = dict(expected_target_sha256 or {})
+
+        modules = semantic_modules or _default_semantic_modules()
+        if not isinstance(modules, DomainModuleRegistry):
+            raise ValueError("semantic_modules must be DomainModuleRegistry")
+        self.semantic_modules = modules
+
+        registry = domain_registry or _default_domain_registry(modules)
+        if not isinstance(registry, DomainRegistry):
+            raise ValueError("domain_registry must be DomainRegistry")
+        if not isinstance(active_domains, tuple) or not active_domains:
+            raise ValueError("active_domains must be a non-empty tuple")
+        if len(set(active_domains)) != len(active_domains):
+            raise ValueError("active_domains must be unique")
+        for domain in active_domains:
+            registry.require(domain)
+        self.domain_registry = registry
+        self.active_domains = active_domains
+
+        if analysis_sandbox is not None and not isinstance(analysis_sandbox, AnalysisSandbox):
+            raise ValueError("analysis_sandbox must be AnalysisSandbox when provided")
+        self.analysis_sandbox = analysis_sandbox
+        if capability_catalog is not None and not isinstance(capability_catalog, CapabilityCatalog):
+            raise ValueError("capability_catalog must be CapabilityCatalog when provided")
+        self.capability_catalog = capability_catalog
+        if challenge_http is not None and not isinstance(challenge_http, ChallengeHttpClient):
+            raise ValueError("challenge_http must be ChallengeHttpClient when provided")
+        self.challenge_http = challenge_http
+        if remote_tcp_runner is not None and not isinstance(remote_tcp_runner, RemoteTcpRunner):
+            raise ValueError("remote_tcp_runner must be RemoteTcpRunner when provided")
+        self.remote_tcp_runner = remote_tcp_runner
+        self.remote_tcp_tool_runtime = (
+            None if remote_tcp_runner is None else RemoteTcpToolRuntime(remote_tcp_runner)
+        )
 
     def tools(self):
         tools = super().tools()
@@ -84,22 +142,35 @@ class VerifiedCTFProfile(CTFProfile):
             failure_modes=["invalid_path", "non_elf", "truncated_elf"],
             provenance={"kind":"deterministic_domain_probe", "domain":"pwn", "schema":"pwn_recon_snapshot.v1"},
         )
+        tools["domain_recon"] = ToolSpec(
+            name="domain_recon",
+            description="Create a bounded deterministic cross-domain ReconDigest for one workspace-relative artifact; raw artifact remains preserved.",
+            handler=make_domain_recon_handler(self.workspace),
+            side_effect=SideEffect.READ,
+            idempotent=True,
+            permission="auto",
+            failure_modes=["invalid_path", "unreadable_artifact"],
+            provenance={"kind":"deterministic_domain_probe", "domain":"cross-domain", "schema":"ctf-recon-digest-v1"},
+        )
+        if self.analysis_sandbox is not None:
+            tools["analysis_exec"] = self.analysis_sandbox.tool()
+        if self.capability_catalog is not None:
+            tools["host_capability"] = self.capability_catalog.make_tool()
+        if self.challenge_http is not None:
+            tools["scoped_http"] = self.challenge_http.make_tool()
+        if self.remote_tcp_tool_runtime is not None:
+            tools["remote_tcp"] = self.remote_tcp_tool_runtime.make_tool()
         return tools
 
     def verifiers(self):
         return [
             *super().verifiers(),
-            *static_pwn_verifiers(),
-            CrashReproducibleVerifier(),
-            ControlFlowVerifier(),
-            LocalExploitVerifier(),
-            EnvironmentCompatibilityVerifier(),
-            RemoteBehaviorVerifier(),
+            *self.semantic_modules.require("pwn").build_verifiers(),
         ]
 
     def claim_verification_registry(self):
         rules = []
-        for spec in PWN_CLAIM_SPECS:
+        for spec in self.semantic_modules.require("pwn").claim_specs():
             level = _LEVEL[spec.verification_level]
             contract = VerificationContract(
                 minimum_level=level,
@@ -114,6 +185,11 @@ class VerifiedCTFProfile(CTFProfile):
         return super().completion_oracle()
 
     def task_progress_snapshot(self, *, goal, state):
+        if "pwn" not in self.active_domains:
+            return None
         facts = getattr(state, "facts", {})
         keys = facts.keys() if hasattr(facts, "keys") else (getattr(item, "key", "") for item in facts)
-        return pwn_progress_snapshot(keys, completed=bool(getattr(state, "completed", False)))
+        return self.semantic_modules.require("pwn").progress_snapshot(
+            keys,
+            completed=bool(getattr(state, "completed", False)),
+        )

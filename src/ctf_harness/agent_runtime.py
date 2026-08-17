@@ -17,7 +17,7 @@ from ctf_harness.runtime import VerifiedCTFRuntime
 
 
 AGENT_CONTROL_SCHEMA = "ctf-agent-control-v1"
-CTF_CONTEXT_SCHEMA = "ctf-context-extension-v1"
+CTF_CONTEXT_SCHEMA = "ctf-context-extension-v2"
 _STOP_REASON_PREVIEW_LIMIT = 512
 _STOP_SUBJECT_PREVIEW_LIMIT = 128
 
@@ -67,6 +67,9 @@ class AgentCTFRuntime(VerifiedCTFRuntime):
             "base_context_projector_reused": True,
             "base_decision_contract_reused": True,
             "base_llm_controller_compatible": True,
+            "domain_registry_revision": "ctf-domain-registry-v1",
+            "active_domains": list(self.profile.active_domains),
+            "playbook_behavior": "advisory_not_mandatory",
             "truth_authority": "none",
             "completion_authority": "external_oracle_only",
             "available_tools": sorted(self.actions.tools),
@@ -107,11 +110,27 @@ class AgentCTFRuntime(VerifiedCTFRuntime):
                 "claim": hypothesis.claim,
                 "status": hypothesis.status.value,
                 "evidence_refs": list(hypothesis.evidence_refs[:8]),
+                "support_evidence": list(hypothesis.support_evidence[:8]),
                 "trust": "untrusted_speculation",
                 "instruction_authority": "none",
                 "truth_authority": "none",
             })
         return projected[:32]
+
+    def _playbook_projection(self) -> dict[str, Any]:
+        facts = getattr(self.state, "facts", {})
+        verified_keys = list(facts.keys()) if hasattr(facts, "keys") else []
+        statuses = [
+            hypothesis.status.value
+            for hypothesis in self.ctf_hypotheses.pool.hypotheses.values()
+        ]
+        return self.profile.domain_registry.project(
+            active_domains=self.profile.active_domains,
+            verified_fact_keys=verified_keys,
+            hypothesis_statuses=statuses,
+            available_tools=sorted(self.actions.tools),
+            completed=bool(self.state.completed),
+        )
 
     def _context(self) -> dict:
         context = super()._context()
@@ -125,6 +144,7 @@ class AgentCTFRuntime(VerifiedCTFRuntime):
                 "completion_authority": "external_oracle_only",
             },
             "capabilities": self._capability_projection(),
+            "playbook": self._playbook_projection(),
             "hypotheses": self._hypothesis_projection(),
         }
         return context
