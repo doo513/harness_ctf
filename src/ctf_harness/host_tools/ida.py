@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +42,7 @@ class JsonProcessCapabilityTransport:
     timeout_seconds: float = 60.0
     max_output_bytes: int = 2 * 1024 * 1024
     env: Mapping[str, str] | None = None
+    inherit_env: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.argv, tuple) or not self.argv or any(
@@ -49,10 +51,14 @@ class JsonProcessCapabilityTransport:
             raise ValueError("capability process argv must be a non-empty tuple")
         if not isinstance(self.revision, str) or not self.revision.strip():
             raise ValueError("capability process revision must be non-empty")
-        if self.timeout_seconds <= 0:
+        if not isinstance(self.timeout_seconds, (int, float)) or isinstance(self.timeout_seconds, bool) or self.timeout_seconds <= 0:
             raise ValueError("capability process timeout must be positive")
-        if not isinstance(self.max_output_bytes, int) or self.max_output_bytes <= 0:
+        if not isinstance(self.max_output_bytes, int) or isinstance(self.max_output_bytes, bool) or self.max_output_bytes <= 0:
             raise ValueError("max_output_bytes must be positive")
+        if self.env is not None and any(not isinstance(k, str) or not isinstance(v, str) for k, v in self.env.items()):
+            raise ValueError("capability process env must map strings to strings")
+        if not isinstance(self.inherit_env, bool):
+            raise ValueError("inherit_env must be boolean")
 
     def available(self) -> bool:
         executable = Path(self.argv[0])
@@ -60,6 +66,14 @@ class JsonProcessCapabilityTransport:
             return executable.is_file()
         import shutil
         return shutil.which(self.argv[0]) is not None
+
+    def _child_env(self) -> dict[str, str]:
+        child = dict(os.environ) if self.inherit_env else {}
+        if self.env:
+            child.update(dict(self.env))
+        child.setdefault("PATH", os.environ.get("PATH", "/usr/bin:/bin"))
+        child.setdefault("LANG", os.environ.get("LANG", "C.UTF-8"))
+        return child
 
     def request(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not self.available():
@@ -74,10 +88,12 @@ class JsonProcessCapabilityTransport:
                 timeout=float(self.timeout_seconds),
                 shell=False,
                 check=False,
-                env=None if self.env is None else dict(self.env),
+                env=self._child_env(),
             )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError("capability process timed out") from exc
+        except OSError as exc:
+            raise RuntimeError(f"capability process cannot execute: {exc}") from exc
         if completed.returncode != 0:
             raise RuntimeError(f"capability process exited {completed.returncode}")
         if len(completed.stdout) > self.max_output_bytes:
@@ -98,6 +114,8 @@ class JsonProcessCapabilityTransport:
             "timeout_seconds": float(self.timeout_seconds),
             "max_output_bytes": self.max_output_bytes,
             "environment_names": sorted((self.env or {}).keys()),
+            "inherit_env": self.inherit_env,
+            "environment_values_persisted": False,
         }
 
 
@@ -145,12 +163,15 @@ class IdaCapabilityProvider:
         raw = Path(ref)
         if raw.is_absolute() or ".." in raw.parts:
             raise ValueError("IDA artifact ref must be normalized relative path")
-        resolved = (self.workspace / raw).resolve(strict=True)
+        unresolved = self.workspace / raw
+        if unresolved.is_symlink():
+            raise ValueError("IDA artifact must be a regular non-symlink file")
+        resolved = unresolved.resolve(strict=True)
         try:
             relative = resolved.relative_to(self.workspace).as_posix()
         except ValueError as exc:
             raise ValueError("IDA artifact escapes workspace") from exc
-        if resolved.is_symlink() or not resolved.is_file():
+        if not resolved.is_file():
             raise ValueError("IDA artifact must be a regular non-symlink file")
         actual = _sha256(resolved)
         if actual != self.expected_sha256[ref]:
