@@ -49,7 +49,7 @@ def test_wp03_workspace_confinement(tmp_path):
  except OSError:pytest.skip("symlink unavailable")
  with pytest.raises(ValueError,match="escapes workspace"):h("escape")
 def test_wp04_small_exact_vocabulary_and_helpers_fail_closed():
- assert resolve_claim_spec("ctf.pwn.arch") is not None;assert resolve_claim_spec("ctf.pwn.arch.extra") is None;assert resolve_claim_spec("ctf.pwn.crash_reproducible") is None;assert resolve_claim_spec("ctf.pwn.offset") is None;assert resolve_claim_spec("ctf.pwn.canary_present") is None;assert resolve_claim_spec("ctf.flag_valid") is None;assert {s.verification_level for s in PWN_CLAIM_SPECS}=={"LOGICAL"}
+ assert resolve_claim_spec("ctf.pwn.arch") is not None;assert resolve_claim_spec("ctf.pwn.arch.extra") is None;assert resolve_claim_spec("ctf.pwn.crash_reproducible") is not None;assert resolve_claim_spec("ctf.pwn.offset") is None;assert resolve_claim_spec("ctf.pwn.canary_present") is None;assert resolve_claim_spec("ctf.flag_valid") is None;assert {s.verification_level for s in PWN_CLAIM_SPECS}=={"LOGICAL","EXECUTION"}
  s=inspect_elf_bytes(elf64());v=StaticPwnVerifier();assert v.verify("ctf.pwn.arch","x86_64",s)[0];assert not v.verify("ctf.pwn.arch","arm",s)[0];assert not v.verify("ctf.pwn.nx",False,s)[0];assert not v.verify("ctf.pwn.canary_present",True,s)[0];pat=cyclic(256);assert recover_offset(pat[99:103],pattern_length=256)==99
 def test_wp05_proof_oracle_boundary():
  assert proof_level_from_verified_keys({"ctf.pwn.remote_behavior"})==ProofLevel.P5_REMOTE;assert proof_level_from_verified_keys({"ctf.pwn.remote_behavior"},completed=False)!=ProofLevel.P6_ACCEPTED;assert proof_level_from_verified_keys(set(),completed=True)==ProofLevel.P6_ACCEPTED;assert compare_environments({"libc":"A"},{"libc":"B"}).adaptation_required;o=ExternalFlagOracle(lambda c:(c=="FLAG{ok}","oracle:1"));r=o.submit("c","remote","FLAG{ok}");assert r.accepted and "FLAG{ok}" not in repr(r)
@@ -69,7 +69,7 @@ def test_wp04_registry_has_real_verifier_for_every_rule(tmp_path):
  from ctf_harness.profile import VerifiedCTFProfile
  p=VerifiedCTFProfile(workspace=tmp_path,execution_backend=RecordingIsolatedTestBackend());r=p.claim_verification_registry();names={v.name for v in p.verifiers()}
  for s in PWN_CLAIM_SPECS:assert set(r.resolve(s.key_prefix).allowed_verifiers)<=names
- assert r.resolve("ctf.web.sqli") is None and r.resolve("ctf.pwn.crash_reproducible") is None and r.resolve("ctf.flag_valid") is None
+ assert r.resolve("ctf.web.sqli") is None and r.resolve("ctf.pwn.crash_reproducible") is not None and r.resolve("ctf.flag_valid") is None
 def test_wp04_core_bound_integrity_provenance_and_mixed_identity(tmp_path):
  from harness.core.storage import ArtifactStore
  from ctf_harness.verifiers.pwn.core import static_pwn_verifiers
