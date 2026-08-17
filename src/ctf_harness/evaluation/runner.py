@@ -22,8 +22,16 @@ class BenchmarkPlan:
     runs: tuple[BenchmarkRunSpec, ...]
 
     def __post_init__(self) -> None:
+        if not isinstance(self.corpus, CorpusLock):
+            raise ValueError("benchmark plan corpus must be CorpusLock")
+        if not isinstance(self.leakage_policy, LeakagePolicy):
+            raise ValueError("benchmark plan leakage_policy must be LeakagePolicy")
+        if not isinstance(self.runs, tuple):
+            raise ValueError("benchmark plan runs must be an immutable tuple")
         if not self.runs:
             raise ValueError("benchmark plan must contain at least one run")
+        if any(not isinstance(spec, BenchmarkRunSpec) for spec in self.runs):
+            raise ValueError("benchmark plan runs must contain BenchmarkRunSpec values")
         assert_mode_policy(self.corpus.mode, self.leakage_policy)
 
         run_ids: set[str] = set()
@@ -31,10 +39,7 @@ class BenchmarkPlan:
         for spec in self.runs:
             if spec.experiment.mode is not self.corpus.mode:
                 raise ValueError("run experiment mode differs from frozen corpus mode")
-            frozen_case = self.corpus.require_case(
-                spec.case.case_id,
-                spec.case.manifest_fingerprint,
-            )
+            frozen_case = self.corpus.require_case(spec.case.case_id, spec.case.manifest_fingerprint)
             if spec.case != frozen_case:
                 raise ValueError("run case metadata differs from the exact frozen corpus case")
             run_id = spec.run_id()
@@ -89,16 +94,6 @@ def assert_comparable_pair(left: BenchmarkRunSpec, right: BenchmarkRunSpec) -> N
 
 
 def paired_specs(*, case, experiment, repeat_index: int = 0) -> tuple[BenchmarkRunSpec, BenchmarkRunSpec]:
-    minimal = BenchmarkRunSpec(
-        case=case,
-        experiment=experiment,
-        arm=ArmConfig.minimal(),
-        repeat_index=repeat_index,
-    )
-    verified = BenchmarkRunSpec(
-        case=case,
-        experiment=experiment,
-        arm=ArmConfig.verified(),
-        repeat_index=repeat_index,
-    )
+    minimal = BenchmarkRunSpec(case=case, experiment=experiment, arm=ArmConfig.minimal(), repeat_index=repeat_index)
+    verified = BenchmarkRunSpec(case=case, experiment=experiment, arm=ArmConfig.verified(), repeat_index=repeat_index)
     return minimal, verified
