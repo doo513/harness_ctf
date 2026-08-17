@@ -4,6 +4,7 @@ from harness.core.verification import VerificationContract, VerificationLevel, V
 from harness.profiles.ctf import CTFProfile
 from ctf_harness.claims.pwn import PWN_CLAIM_SPECS
 from ctf_harness.progress.pwn import pwn_progress_snapshot
+from ctf_harness.target.runners import NativeRunner, TargetRunner
 from ctf_harness.tools.recon import make_pwn_recon_handler
 from ctf_harness.tools.crash import make_crash_probe_tool
 from ctf_harness.tools.control import make_control_probe_tool
@@ -20,16 +21,51 @@ _LEVEL = {name: getattr(VerificationLevel, name) for name in ("LOGICAL", "EXECUT
 class VerifiedCTFProfile(CTFProfile):
     name = "verified_ctf"
 
-    def __init__(self, *, workspace=".", external_oracle=None, execution_backend=None, flag_completion_oracle=None):
+    def __init__(
+        self,
+        *,
+        workspace=".",
+        external_oracle=None,
+        execution_backend=None,
+        flag_completion_oracle=None,
+        target_runners: dict[str, TargetRunner] | None = None,
+        default_target_profile_id: str = "native-default",
+        expected_target_sha256: dict[str, str] | None = None,
+    ):
         super().__init__(workspace=workspace, external_oracle=external_oracle, execution_backend=execution_backend)
         self.flag_completion_oracle = flag_completion_oracle
+        configured = dict(target_runners or {"native-default": NativeRunner("native-default")})
+        if not configured:
+            raise ValueError("VerifiedCTFProfile requires at least one target runner")
+        for profile_id, runner in configured.items():
+            if not isinstance(profile_id, str) or not profile_id.strip():
+                raise ValueError("target runner profile id must be a non-empty string")
+            if getattr(runner, "profile_id", None) != profile_id:
+                raise ValueError("target runner registry key must equal runner.profile_id")
+        if default_target_profile_id not in configured:
+            raise ValueError("default target runner profile is not registered")
+        self.target_runners = configured
+        self.default_target_profile_id = default_target_profile_id
+        self.expected_target_sha256 = dict(expected_target_sha256 or {})
 
     def tools(self):
         tools = super().tools()
         tools["argv"] = make_argv_tool(self.workspace, backend=self.execution_backend)
         tools["session"] = make_session_tool(self.workspace, backend=self.execution_backend)
-        tools["pwn_crash_probe"] = make_crash_probe_tool(self.workspace, backend=self.execution_backend)
-        tools["pwn_control_probe"] = make_control_probe_tool(self.workspace, backend=self.execution_backend)
+        tools["pwn_crash_probe"] = make_crash_probe_tool(
+            self.workspace,
+            backend=self.execution_backend,
+            runners=self.target_runners,
+            default_profile_id=self.default_target_profile_id,
+            expected_target_sha256=self.expected_target_sha256,
+        )
+        tools["pwn_control_probe"] = make_control_probe_tool(
+            self.workspace,
+            backend=self.execution_backend,
+            runners=self.target_runners,
+            default_profile_id=self.default_target_profile_id,
+            expected_target_sha256=self.expected_target_sha256,
+        )
         tools["pwn_recon"] = ToolSpec(
             name="pwn_recon",
             description="Deterministically inspect one workspace-relative ELF artifact.",
