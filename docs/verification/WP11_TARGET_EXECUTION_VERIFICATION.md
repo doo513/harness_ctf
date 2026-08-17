@@ -1,419 +1,151 @@
 # WP11 — Target Execution Layer Verification
 
-**Status:** `PARTIAL — TARGET EXECUTION CORE PASS / FULL MIGRATION + DREAMHACK 103 REPLAY OPEN`
+**Status:** `PASS — EXECUTION BOUNDARY STABILIZED / REAL-WORLD REPLAY REMAINS EMPIRICAL FOLLOW-UP`
 
 ## 1. Goal
 
-Remove the host-native direct-execution assumption from the operational Pwn path and establish explicit, evidence-bound target/runtime execution for native, fixed-launcher, QEMU user-mode, and remote TCP targets.
-
-WP11 must preserve two distinct identities:
+Establish one evidence-bound execution boundary for Pwn target execution without making a particular emulator, container, or VM the architecture center.
 
 ```text
 target identity  = challenge target bytes
-runtime identity = executable/runtime environment used to run that target
+runtime identity = registered execution environment
+launch identity  = target + runtime + exact argv
 ```
 
-It must also preserve the existing Base execution/isolation authority for process-backed probes rather than introducing an unrestricted subprocess path in the Harness process.
+`TargetRunner` owns process launch description; Base owns process isolation/execution; evidence + claim-specific verifiers own semantic promotion. Remote transport remains separate from P5 truth authority.
 
----
-
-## 2. Previous Gap
-
-Before WP11 the crash helper executed:
-
-```python
-subprocess.run([exec_path], ...)
-```
-
-inside its fixed helper.
-
-That worked for a host-native ELF, but it could not truthfully represent:
-
-```text
-qemu-aarch64-static
--> optional sysroot / loader
--> challenge ELF
-```
-
-without either changing target identity to the emulator or bypassing the existing evidence path.
-
-The Dreamhack 103 smoke case had already demonstrated the practical consequence: an AArch64 SIGSEGV and LR/PC control were physically observed externally, but the current Harness could not register that P1 execution through its normal crash tool path.
-
----
-
-## 3. Contract
-
-### 3.1 RuntimeLaunch
-
-Added an immutable launch boundary that binds:
-
-```text
-profile_id
-runtime_kind
-exact argv
-target_sha256
-runtime artifacts
-runtime args
-```
-
-with two hashes serving different purposes:
-
-```text
-runtime_fingerprint
-= runtime profile/artifact identity only
-
-launch_fingerprint
-= target_sha256 + runtime_fingerprint + exact argv
-```
-
-The target SHA is deliberately excluded from the runtime descriptor so emulator/runtime identity cannot replace challenge identity.
-
-### 3.2 Process-backed runner profiles
-
-Implemented:
+## 2. Current supported execution providers
 
 ```text
 NativeRunner
 CustomArgvRunner
 QemuUserRunner
+RemoteTcpRunner  # challenge transport, not local process runner / not P5 authority
 ```
 
-`CustomArgvRunner` is not an arbitrary command runner. Its launcher executable SHA-256 and fixed argument tuple are configured in the registered profile; the Actor may not supply extra launcher arguments at execution time.
+QEMU user-mode is one provider. WP11 does not create a QEMU-system/VM architecture. Future container/emulator/VM support is added only when an admitted challenge demonstrates the need and the provider can preserve the same identity/integrity contract.
 
-`QemuUserRunner` binds:
+## 3. Stage 0 closure
+
+The original WP11 partial gate left three practical gaps:
 
 ```text
-QEMU executable SHA-256
-optional sysroot tree fingerprint
-optional loader SHA-256
-fixed QEMU / loader args
-target SHA-256 separately
+pwn_control_probe  -> direct/architecture-specific execution
+P3 local proof     -> separate direct target execution contract
+Remote TCP read    -> single recv() semantics
 ```
 
-The sysroot tree fingerprint covers regular-file content plus safe internal relative symlink identity. Absolute or tree-escaping symlinks fail closed because their referents would sit outside the tree fingerprint's authority.
+Stage 0 closed those execution-boundary gaps.
 
-### 3.3 Crash schema v2
+### P1
 
-The crash probe now accepts:
-
-```text
-[target, input_b64]
-```
-
-for backward-compatible default native execution, or:
-
-```text
-[target, input_b64, registered_runtime_profile_id]
-```
-
-for an explicitly registered runtime.
-
-Schema v2 records/binds:
+Runtime-bound schema v2 verified facts now preserve:
 
 ```text
 target_sha256
 input_sha256
-runtime descriptor
-runtime_fingerprint
-launch argv
-launch_fingerprint
-return code
 signal
-timeout
-stdout/stderr hashes
+runtime_fingerprint
+launch_fingerprint
 ```
 
-The helper re-validates the target and runtime artifacts immediately before `subprocess.run(..., shell=False)` inside the delegated Base sandbox execution path.
+so execution conditions are not lost after verification.
 
-### 3.4 Crash verifier compatibility
+### P2
 
-`CrashReproducibleVerifier` accepts legacy schema v1 and runtime-bound schema v2 without weakening P1 semantics.
+The x86_64 RIP control probe now builds its launch through a registered `TargetRunner` and emits runtime/launch-bound evidence. The verifier remains intentionally native x86_64 only; non-native runtime profiles fail closed before execution.
 
-The P1 truth condition remains:
+### P3
+
+The local proof oracle now uses an exact `RuntimeLaunch`, persists runtime/launch identity in its receipt/fact candidate, and requires a live strong Base filesystem boundary with `workspace_writable=False`.
+
+The read-only requirement was added after review showed that Base workspaces are writable by default. Without the seal, an actor-controlled exploit could mutate the target/workspace runtime after identity validation. The live probe actively attempts target mutation and requires it to fail; a writable-workspace negative control is rejected.
+
+### Remote TCP
+
+`RemoteTcpSession` now supports bounded persistent protocol reads:
 
 ```text
-same target
-+ same input
-+ same terminating signal
-+ independent registered observations
+read(wait_seconds, idle_grace_seconds)
+read_until(delimiter, wait_seconds)
+read_exact(byte_count, wait_seconds)
+bounded_drain(wait_seconds)
 ```
 
-For schema v2, reproduced observations must additionally have the same runtime and launch fingerprints. Mixing v1 and v2 observations fails closed.
+A pending buffer preserves delimiter over-read while transcript hashes/counts record each network byte exactly once.
 
-### 3.5 RemoteTcpRunner
+## 4. Evidence history
 
-Added an operational TCP transport distinct from the existing P5 semantic oracle.
-
-Construction requires:
+### Red gate
 
 ```text
-OperationalChallengeRef
-+ admitted RemoteTargetSpec
-+ NetworkPolicy(challenge_transport=True)
+run: 32054672074
+result: failure
+Base: 220 passed, 7 skipped
+CTF: 135 passed
+failure: controlled QEMU P1 fixture omitted newly-required runtime/launch fact identity
 ```
 
-It therefore rejects an endpoint not present in the admitted manifest or a challenge whose manifest disallows network access.
+The QEMU execution and SIGSEGV observation succeeded. The failure was preserved and classified as fixture lag after strengthening the production schema v2 fact contract.
 
-The runner resolves the admitted hostname once, pins the numeric IPv4/IPv6 set, connects only to those addresses, bounds per-action send/read sizes, and emits transcript receipts containing hashes/counts rather than persisted plaintext request/response bodies.
-
-This is challenge transport, not general Internet authority and not P5 success authority.
-
----
-
-## 4. Implementation
-
-Added/changed:
+### Final code gate
 
 ```text
-src/ctf_harness/target/__init__.py
-src/ctf_harness/target/models.py
-src/ctf_harness/target/runners.py
-src/ctf_harness/target/remote.py
-src/ctf_harness/tools/crash.py
-src/ctf_harness/verifiers/pwn/crash.py
-
-tests/test_target_runners.py
-tests/test_crash_target_runtime.py
-tests/test_remote_target_runner.py
-
-scripts/target_runner_qemu_probe.py
-scripts/target_runner_remote_tcp_probe.py
-.github/workflows/verify.yml
-```
-
-The verification workflow now installs `qemu-user-static` for the controlled AArch64 execution probe.
-
----
-
-## 5. Review defects found and remediated during implementation
-
-### R11-01 — QEMU executable alone was insufficient provenance
-
-The first runner draft bound QEMU and loader but did not bind a sysroot tree. This could allow library content to change while the apparent runtime profile stayed stable.
-
-Remediation:
-
-```text
-sysroot_relpath
-+ sysroot_fingerprint
-```
-
-were added, with the fingerprint rechecked again inside the crash helper before target execution.
-
-### R11-02 — rejecting every sysroot symlink was over-restrictive
-
-The first tree fingerprint rejected all symlinks. That is unnecessarily incompatible with ordinary Linux runtime trees.
-
-Remediation:
-
-- internal relative symlink identity is hashed;
-- absolute symlinks fail closed;
-- relative symlinks escaping the runtime tree fail closed.
-
-### R11-03 — remote target admission was initially too weak
-
-The first `RemoteTcpRunner` accepted a `RemoteTargetSpec` plus policy, but that object alone did not prove that the endpoint came from the admitted challenge manifest.
-
-Remediation:
-
-`OperationalChallengeRef` is now mandatory, and the runner rechecks:
-
-```text
-endpoint in admitted remote_endpoints
-allowed_network == true
-challenge_transport == true
-```
-
-before DNS resolution/connection.
-
-### R11-04 — CustomArgvRunner was missing from the roadmap implementation
-
-The initial WP11 slice covered native/QEMU but omitted the planned fixed custom-launcher case.
-
-Remediation:
-
-`CustomArgvRunner` was added with a hash-bound launcher and immutable fixed args. It cannot accept dynamic Actor-supplied command arguments.
-
-### R11-05 — WP10 secret boundary had an endpoint-string hole
-
-During WP11 review, a `RemoteTargetSpec` could theoretically carry raw URI userinfo/query material such as credential-bearing endpoint strings even though `CredentialRef` had no raw value field.
-
-This is a WP10 contract defect discovered during WP11 and was remediated in the operational models. TCP target endpoints now reject embedded username/password, path/query/fragment token material, missing hosts, invalid ports, and surrounding whitespace.
-
-### R11-06 — OperationalChallengeRef could be manually constructed
-
-The first WP10 dataclass exposed a normal constructor, which meant callers could create copied challenge identity fields without going through `ChallengeManifest`.
-
-Remediation:
-
-normal dataclass initialization was disabled. The supported public construction path is now `OperationalChallengeRef.from_manifest(...)`, preserving `ChallengeManifest + artifact hashes` as the operational challenge source of truth.
-
----
-
-## 6. Positive Evidence
-
-Final reviewed code gate:
-
-```text
-branch: implementation/evidence-roadmap
-code HEAD: 8ff8f535f31072b643cbeb4bed957b6a09e36f47
-GitHub Actions run: 32045210634
+code HEAD: c9b6b34ec2499232cdcf9dfb38ad8379bd0aed75
+run: 32054864672
+job: 95462571212
 conclusion: success
-CTF pytest: 129 passed in 5.34s
+Base: 220 passed, 7 skipped
+CTF: 135 passed in 5.59s
 ```
 
-The exact same workflow passed:
-
-- Base pinned revision check;
-- compile/install/pip check;
-- Base regression;
-- Base invariant probes;
-- CTF pytest regression;
-- live native P1 crash semantic probe through the migrated crash path;
-- controlled QEMU AArch64 crash runner probe;
-- controlled operational remote TCP runner probe;
-- existing x86_64 P2 control-flow probe;
-- existing P3 local-proof probe;
-- existing P4 environment compatibility probe;
-- existing P5 remote-behavior probe;
-- existing P6 external completion probe;
-- WP06 hypothesis/dedupe;
-- WP07 recovery/progress;
-- all existing WP08 evaluation probes.
-
-### Controlled QEMU AArch64 probe
-
-The controlled QEMU probe builds a minimal AArch64 `ET_EXEC` fixture without a cross-compiler. The guest performs a deterministic NULL dereference.
-
-The probe then executes the target twice through:
+Preserved regression artifact:
 
 ```text
-QemuUserRunner
--> migrated pwn_crash_probe
--> Base LinuxNamespaceSandboxBackend
--> registered observations
--> CrashReproducibleVerifier
+ctf-pytest-log
+artifact id: 9296044612
+sha256: d6453dd93b823f665f88b13dc5d5e65e7019da4276ab30db312b40d1ec93e2a2
 ```
 
-and requires both executions to expose guest `SIGSEGV` as signal 11 with the same runtime/launch identity.
+The same workflow passed native P1, controlled QEMU-user AArch64 P1, delayed/over-read remote TCP, native x86_64 P2, sealed P3, P4, P5, P6, WP06, WP07, and all existing WP08 probes.
 
-This is executable evidence that the new path is not merely a data-model abstraction.
+Full Stage 0 defect/remediation and logical review: `WP11_STAGE0_EXECUTION_BOUNDARY_VERIFICATION.md`.
 
-### Controlled remote TCP probe
-
-The controlled remote probe verifies:
+## 5. Authority review
 
 ```text
-admitted local TCP endpoint
--> DNS/IP pin
--> open
--> send
--> read
--> close
--> transcript receipt hashes
+TargetRunner                  = execution description, not truth
+RemoteTcpRunner               = admitted transport, not P5 truth
+runtime/launch fingerprints   = execution conditions in P1/P2/P3 facts
+HarnessState.facts            = semantic truth authority
+CTF proof projection          = projection only
+External Oracle               = final completion authority
 ```
 
-and separately confirms that blocked challenge transport and an unadmitted endpoint are rejected.
+No second fact/proof/recovery/completion authority was added.
 
----
-
-## 7. Negative Controls
-
-Current WP10/WP11 tests and probes fail closed on, among other cases:
-
-- target path escape;
-- target SHA mismatch;
-- mutated custom launcher;
-- malformed/dynamic custom fixed args;
-- QEMU SHA mismatch;
-- sysroot tree mutation;
-- unsupported/escaping sysroot symlink;
-- loader SHA mismatch;
-- unregistered runtime profile;
-- crash runtime/launch fingerprint tampering;
-- mixing crash evidence from different runtime identities;
-- timeout presented as a reproduced crash;
-- unadmitted remote endpoint;
-- manifest network denial;
-- solve challenge-transport denial;
-- credential-bearing TCP endpoint URI;
-- persisted transcript plaintext in the receipt contract;
-- oversized remote send/read action;
-- use of a closed remote session.
-
----
-
-## 8. Regression
-
-**Result: PASS for the current branch code gate.**
-
-The WP11 code did not weaken existing P1 truth criteria and the same full workflow preserved the previous Base, P2–P6, WP06, WP07, and WP08 gates.
-
-The current regression count is:
+## 6. Explicitly unsupported / not claimed
 
 ```text
-129 passed in 5.34s
+actual Dreamhack 103 handout replay         OPEN empirical follow-up
+AArch64 LR/PC P2 semantic verifier          OPEN later architecture generalization
+full-system/VM execution provider           NOT IMPLEMENTED; add only when needed
+actual model-driven solve loop              OPEN next stages
+Minimal-vs-Verified effectiveness           NOT MEASURED
 ```
 
----
+A controlled QEMU-user P1 is not evidence of full-system environment equivalence.
 
-## 9. Real-world Evidence
-
-The repository retains the prior Dreamhack 103 smoke report showing external AArch64 crash/control observations, but the actual handout bytes are not committed into this repository.
-
-Therefore this WP11 implementation did **not** fabricate a real Dreamhack replay from documentation-only hashes/notes.
-
-Current distinction:
+## 7. Exit decision
 
 ```text
-controlled QEMU AArch64 P1 through normal Harness path = PASS
-actual Dreamhack 103 P1 replay through normal Harness path = OPEN
+process execution abstraction            PASS
+P1 execution identity preservation       PASS
+P2 execution migration                   PASS
+P3 execution migration + actor seal      PASS
+remote persistent protocol semantics     PASS
+semantic inflation blocked               PASS
+existing regression gates                PASS
 ```
 
-A real WP11 Dreamhack gate requires the exact handout artifacts/runtime inputs to be supplied to the target runner and two crash observations to be registered and verified through the production path.
-
----
-
-## 10. Remaining WP11 scope
-
-The following roadmap items remain open:
-
-1. replay the actual Dreamhack 103 handout through `QemuUserRunner` and register P1 through normal Harness evidence/fact flow;
-2. migrate the current x86_64 control probe onto the same target/runtime execution abstraction without pretending QEMU/AArch64 P2 is already supported;
-3. migrate the current local-proof execution path onto the target/runtime abstraction;
-4. integrate the new operational remote transport with the later solve/runtime tool boundary rather than leaving it as an independently callable transport class;
-5. converge the process-launch and remote-session APIs into the final common TargetRunner/SolveEngine-facing facade if that remains useful after the controller contract is implemented.
-
-AArch64 P2 semantic verification remains WP15 work and must not be folded into WP11 with a generic verifier fallback.
-
----
-
-## 11. Exit Decision
-
-### Process/transport core gate
-
-```text
-NativeRunner                                      PASS
-CustomArgvRunner                                  PASS
-QemuUserRunner                                    PASS
-separate target/runtime identity                  PASS
-runtime artifact revalidation                     PASS
-native P1 migrated to runtime-bound schema        PASS
-controlled QEMU AArch64 P1                        PASS
-RemoteTcpRunner admitted transport                PASS
-Base process-isolation authority preserved        PASS
-existing regression/probes                        PASS
-```
-
-### Full roadmap WP11 gate
-
-```text
-actual Dreamhack 103 P1 registered                OPEN
-pwn_control_probe runner migration                OPEN
-local-proof runner migration                      OPEN
-SolveEngine-facing transport integration          OPEN
-```
-
-**Decision:** `PARTIAL — TARGET EXECUTION CORE PASS / FULL WP11 EXIT GATE OPEN`.
-
-The correct next action is to finish the remaining WP11 migration and replay the exact Dreamhack handout when those artifacts are available. WP12 Agent Controller should not be declared complete before that execution boundary is stable.
+**Decision:** WP11 execution-boundary work required before Agent integration is complete. SolveEngine wiring is no longer treated as a WP11 prerequisite because that would create a dependency on a component implemented later. The next stage is Agent Foundation.
