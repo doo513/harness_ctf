@@ -41,7 +41,13 @@ class ArmConfig:
     def __post_init__(self) -> None:
         if not isinstance(self.arm, BenchmarkArm):
             raise ValueError("arm must be BenchmarkArm")
-        for field_name in ("semantic_verification", "proof_gate", "hypothesis_guard", "typed_recovery", "task_progress"):
+        for field_name in (
+            "semantic_verification",
+            "proof_gate",
+            "hypothesis_guard",
+            "typed_recovery",
+            "task_progress",
+        ):
             if not isinstance(getattr(self, field_name), bool):
                 raise ValueError(f"{field_name} must be boolean")
 
@@ -76,11 +82,19 @@ class ExperimentContract:
     def __post_init__(self) -> None:
         if not isinstance(self.mode, EvaluationMode):
             raise ValueError("mode must be EvaluationMode")
-        for field_name in ("model_id", "model_revision", "controller_revision", "sandbox_id", "oracle_policy_id"):
+        for field_name in (
+            "model_id",
+            "model_revision",
+            "controller_revision",
+            "sandbox_id",
+            "oracle_policy_id",
+        ):
             value = getattr(self, field_name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{field_name} must be a non-empty string")
-        if not isinstance(self.tool_inventory, tuple) or any(not isinstance(item, str) or not item.strip() for item in self.tool_inventory):
+        if not isinstance(self.tool_inventory, tuple) or any(
+            not isinstance(item, str) or not item.strip() for item in self.tool_inventory
+        ):
             raise ValueError("tool_inventory must be a tuple of non-empty strings")
         if len(set(self.tool_inventory)) != len(self.tool_inventory):
             raise ValueError("tool_inventory must be unique")
@@ -94,7 +108,9 @@ class ExperimentContract:
         ):
             raise ValueError("max_wall_seconds must be finite and positive")
         if self.max_tokens is not None and (
-            not isinstance(self.max_tokens, int) or isinstance(self.max_tokens, bool) or self.max_tokens <= 0
+            not isinstance(self.max_tokens, int)
+            or isinstance(self.max_tokens, bool)
+            or self.max_tokens <= 0
         ):
             raise ValueError("max_tokens must be a positive integer when provided")
         if self.seed is not None and (not isinstance(self.seed, int) or isinstance(self.seed, bool)):
@@ -137,7 +153,9 @@ class BenchmarkCase:
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{field_name} must be a non-empty string")
         _lower_sha256(self.manifest_fingerprint, field_name="manifest_fingerprint")
-        if self.difficulty is not None and (not isinstance(self.difficulty, str) or not self.difficulty.strip()):
+        if self.difficulty is not None and (
+            not isinstance(self.difficulty, str) or not self.difficulty.strip()
+        ):
             raise ValueError("difficulty must be a non-empty string when provided")
 
     def descriptor(self) -> dict[str, Any]:
@@ -156,18 +174,26 @@ class BenchmarkRunSpec:
     def __post_init__(self) -> None:
         if self.case.mode is not self.experiment.mode:
             raise ValueError("case mode and experiment mode must match")
-        if not isinstance(self.repeat_index, int) or isinstance(self.repeat_index, bool) or self.repeat_index < 0:
+        if (
+            not isinstance(self.repeat_index, int)
+            or isinstance(self.repeat_index, bool)
+            or self.repeat_index < 0
+        ):
             raise ValueError("repeat_index must be a non-negative integer")
 
     def comparison_key(self) -> str:
-        return canonical_hash({
-            "case": self.case.descriptor(),
-            "experiment": self.experiment.descriptor(),
-            "repeat_index": self.repeat_index,
-        })
+        return canonical_hash(
+            {
+                "case": self.case.descriptor(),
+                "experiment": self.experiment.descriptor(),
+                "repeat_index": self.repeat_index,
+            }
+        )
 
     def run_id(self) -> str:
-        return canonical_hash({"comparison_key": self.comparison_key(), "arm": self.arm.descriptor()})
+        return canonical_hash(
+            {"comparison_key": self.comparison_key(), "arm": self.arm.descriptor()}
+        )
 
 
 @dataclass(frozen=True)
@@ -205,19 +231,37 @@ class IndependentAdjudication:
             raise ValueError("adjudicator_id must be a non-empty string")
         _lower_sha256(self.evidence_sha256, field_name="evidence_sha256")
         _lower_sha256(self.run_id, field_name="adjudication run_id")
-        _lower_sha256(self.run_evidence_sha256, field_name="adjudication run_evidence_sha256")
+        _lower_sha256(
+            self.run_evidence_sha256,
+            field_name="adjudication run_evidence_sha256",
+        )
         if not isinstance(self.oracle_accepted, bool):
             raise ValueError("oracle_accepted must be boolean")
-        if self.highest_proof_level is not None and not isinstance(self.highest_proof_level, ProofLevel):
+        if self.highest_proof_level is not None and not isinstance(
+            self.highest_proof_level, ProofLevel
+        ):
             raise ValueError("highest_proof_level must be ProofLevel or None")
         if not isinstance(self.invalid_verified_fact_keys, tuple):
             raise ValueError("invalid_verified_fact_keys must be a tuple")
-        if any(not isinstance(key, str) or not key for key in self.invalid_verified_fact_keys):
+        if any(
+            not isinstance(key, str) or not key
+            for key in self.invalid_verified_fact_keys
+        ):
             raise ValueError("invalid_verified_fact_keys must contain non-empty strings")
         if len(set(self.invalid_verified_fact_keys)) != len(self.invalid_verified_fact_keys):
             raise ValueError("invalid_verified_fact_keys must be unique")
-        if self.oracle_accepted and self.highest_proof_level not in {None, ProofLevel.P6_ACCEPTED}:
-            raise ValueError("oracle acceptance cannot be paired with a non-P6 highest proof level")
+        if self.oracle_accepted and self.highest_proof_level not in {
+            None,
+            ProofLevel.P6_ACCEPTED,
+        }:
+            raise ValueError(
+                "oracle acceptance cannot be paired with a non-P6 highest proof level"
+            )
+        if (
+            self.highest_proof_level is ProofLevel.P6_ACCEPTED
+            and not self.oracle_accepted
+        ):
+            raise ValueError("P6 accepted proof cannot exist without oracle acceptance")
 
 
 @dataclass(frozen=True)
@@ -242,13 +286,21 @@ class RawRunOutcome:
             raise ValueError("failure_signatures must be a tuple")
         if len(set(self.verified_fact_keys)) != len(self.verified_fact_keys):
             raise ValueError("verified_fact_keys must be unique")
-        if any(not isinstance(key, str) or not key for key in self.verified_fact_keys):
+        if any(
+            not isinstance(key, str) or not key for key in self.verified_fact_keys
+        ):
             raise ValueError("verified_fact_keys must contain non-empty strings")
-        if any(not isinstance(sig, str) or not sig for sig in self.failure_signatures):
+        if any(
+            not isinstance(sig, str) or not sig for sig in self.failure_signatures
+        ):
             raise ValueError("failure_signatures must contain non-empty strings")
         for name in ("tool_calls", "steps"):
             value = getattr(self, name)
-            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 0
+            ):
                 raise ValueError(f"{name} must be a non-negative integer")
         if (
             not isinstance(self.wall_seconds, (int, float))
@@ -260,9 +312,13 @@ class RawRunOutcome:
         for name in ("input_tokens", "output_tokens"):
             value = getattr(self, name)
             if value is not None and (
-                not isinstance(value, int) or isinstance(value, bool) or value < 0
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 0
             ):
-                raise ValueError(f"{name} must be a non-negative integer when provided")
+                raise ValueError(
+                    f"{name} must be a non-negative integer when provided"
+                )
         if self.cost_usd is not None and (
             not isinstance(self.cost_usd, (int, float))
             or isinstance(self.cost_usd, bool)
@@ -270,5 +326,7 @@ class RawRunOutcome:
             or self.cost_usd < 0
         ):
             raise ValueError("cost_usd must be finite and non-negative when provided")
-        if self.terminal_reason is not None and not isinstance(self.terminal_reason, str):
+        if self.terminal_reason is not None and not isinstance(
+            self.terminal_reason, str
+        ):
             raise ValueError("terminal_reason must be a string when provided")
