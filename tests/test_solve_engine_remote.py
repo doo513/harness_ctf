@@ -79,7 +79,6 @@ class Factory:
             spec.challenge,
             self.runner_target,
             network_policy=spec.network_policy,
-            resolver=lambda host, port: ("127.0.0.1",),
         )
         profile = VerifiedCTFProfile(
             workspace=self.root / "workspace",
@@ -105,7 +104,7 @@ def _root(tmp_path: Path):
 
 
 def test_remote_solve_rejects_general_internet_before_binding_execution(tmp_path: Path) -> None:
-    endpoint = "tcp://fixture.invalid:31337"
+    endpoint = "tcp://127.0.0.1:31337"
     policy = NetworkPolicy(True, True, False)
     spec = _spec(endpoint, policy=policy)
     with pytest.raises(ValueError, match="general_internet=false"):
@@ -113,7 +112,7 @@ def test_remote_solve_rejects_general_internet_before_binding_execution(tmp_path
 
 
 def test_remote_solve_rejects_local_target_path_binding(tmp_path: Path) -> None:
-    endpoint = "tcp://fixture.invalid:31337"
+    endpoint = "tcp://127.0.0.1:31337"
     spec = _spec(endpoint)
     root = _root(tmp_path)
     (root / "workspace" / "chal").write_bytes(b"x")
@@ -122,9 +121,9 @@ def test_remote_solve_rejects_local_target_path_binding(tmp_path: Path) -> None:
 
 
 def test_remote_solve_rejects_runner_target_identity_mismatch(tmp_path: Path) -> None:
-    endpoint = "tcp://fixture.invalid:31337"
+    endpoint = "tcp://127.0.0.1:31337"
     spec = _spec(endpoint)
-    wrong = RemoteTargetSpec(endpoint="tcp://fixture.invalid:31338", transport=RemoteTransport.TCP)
+    wrong = RemoteTargetSpec(endpoint="tcp://127.0.0.1:31338", transport=RemoteTransport.TCP)
     # The wrong endpoint is not admitted by the challenge, so the runner itself
     # must fail closed even before SolveEngine can accept the binding.
     with pytest.raises(ValueError):
