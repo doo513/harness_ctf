@@ -7,10 +7,12 @@ import threading
 
 import pytest
 
+from ctf_harness.manifest.models import ChallengeManifest
 from ctf_harness.operational.models import (
     CredentialKind,
     CredentialRef,
     NetworkPolicy,
+    OperationalChallengeRef,
     RemoteTargetSpec,
     RemoteTransport,
 )
@@ -19,6 +21,8 @@ from ctf_harness.target.remote import RemoteTcpRunner
 
 REQUEST = b"PING\n"
 RESPONSE = b"PONG\n"
+ARTIFACT_SHA = "a" * 64
+RUNNER_DIGEST = "sha256:" + "f" * 64
 
 
 def _serve_once(listener: socket.socket, errors: list[str]) -> None:
@@ -51,21 +55,40 @@ def _network(*, challenge_transport: bool = True) -> NetworkPolicy:
     )
 
 
+def _challenge(endpoint: str, *, allowed_network: bool = True) -> OperationalChallengeRef:
+    manifest = ChallengeManifest(
+        challenge_id="remote-runner-fixture",
+        event="controlled",
+        description="WP11 remote target runner fixture",
+        artifact_refs=("chal",),
+        remote_endpoints=(endpoint,),
+        category_hint="pwn",
+        flag_format="flag{...}",
+        allowed_network=allowed_network,
+        allowed_tools=("remote_tcp",),
+        runner_image_digest=RUNNER_DIGEST,
+        challenge_revision="r1",
+        oracle_type="external",
+        benchmark_policy="research",
+    )
+    return OperationalChallengeRef.from_manifest(manifest, {"chal": ARTIFACT_SHA})
+
+
 def test_remote_tcp_runner_pins_endpoint_and_hashes_transcript_without_plaintext() -> None:
     listener, port = _listener()
     errors: list[str] = []
     thread = threading.Thread(target=_serve_once, args=(listener, errors), daemon=True)
     thread.start()
 
-    target = RemoteTargetSpec(
-        endpoint=f"tcp://127.0.0.1:{port}",
-        transport=RemoteTransport.TCP,
-    )
-    runner = RemoteTcpRunner(target, network_policy=_network())
+    endpoint = f"tcp://127.0.0.1:{port}"
+    challenge = _challenge(endpoint)
+    target = RemoteTargetSpec(endpoint=endpoint, transport=RemoteTransport.TCP)
+    runner = RemoteTcpRunner(challenge, target, network_policy=_network())
 
     assert runner.pinned_ips == ("127.0.0.1",)
     assert runner.describe()["challenge_transport"] is True
     assert runner.describe()["general_internet"] is False
+    assert runner.describe()["challenge_manifest_fingerprint"] == challenge.manifest_fingerprint
 
     session = runner.open_session()
     assert session.send(REQUEST) == len(REQUEST)
@@ -77,6 +100,7 @@ def test_remote_tcp_runner_pins_endpoint_and_hashes_transcript_without_plaintext
     assert errors == []
     assert receipt.closed
     assert receipt.peer_ip == "127.0.0.1"
+    assert receipt.challenge_manifest_fingerprint == challenge.manifest_fingerprint
     assert receipt.sent_bytes == len(REQUEST)
     assert receipt.received_bytes == len(RESPONSE)
     assert receipt.sent_sha256 == hashlib.sha256(REQUEST).hexdigest()
@@ -86,31 +110,45 @@ def test_remote_tcp_runner_pins_endpoint_and_hashes_transcript_without_plaintext
     assert RESPONSE.decode().strip() not in serialized
 
 
-def test_remote_tcp_runner_requires_explicit_challenge_transport_policy() -> None:
-    target = RemoteTargetSpec(
-        endpoint="tcp://127.0.0.1:31337",
-        transport=RemoteTransport.TCP,
-    )
+def test_remote_tcp_runner_requires_admission_and_network_authority() -> None:
+    endpoint = "tcp://127.0.0.1:31337"
+    target = RemoteTargetSpec(endpoint=endpoint, transport=RemoteTransport.TCP)
+
+    with pytest.raises(ValueError, match="not admitted"):
+        RemoteTcpRunner(
+            _challenge("tcp://127.0.0.1:31338"),
+            target,
+            network_policy=_network(),
+        )
+    with pytest.raises(ValueError, match="does not allow network"):
+        RemoteTcpRunner(
+            _challenge(endpoint, allowed_network=False),
+            target,
+            network_policy=_network(),
+        )
     with pytest.raises(ValueError, match="blocks challenge transport"):
-        RemoteTcpRunner(target, network_policy=_network(challenge_transport=False))
+        RemoteTcpRunner(
+            _challenge(endpoint),
+            target,
+            network_policy=_network(challenge_transport=False),
+        )
 
 
 def test_remote_tcp_runner_rejects_credentials_embedded_in_endpoint() -> None:
-    target = RemoteTargetSpec(
-        endpoint="tcp://user:secret@127.0.0.1:31337",
-        transport=RemoteTransport.TCP,
-    )
+    endpoint = "tcp://user:secret@127.0.0.1:31337"
+    target = RemoteTargetSpec(endpoint=endpoint, transport=RemoteTransport.TCP)
     with pytest.raises(ValueError, match="must not contain credentials"):
-        RemoteTcpRunner(target, network_policy=_network())
+        RemoteTcpRunner(_challenge(endpoint), target, network_policy=_network())
 
 
 def test_remote_tcp_runner_descriptor_exposes_only_credential_presence() -> None:
+    endpoint = "tcp://127.0.0.1:31337"
     target = RemoteTargetSpec(
-        endpoint="tcp://127.0.0.1:31337",
+        endpoint=endpoint,
         transport=RemoteTransport.TCP,
         credential_ref=CredentialRef(CredentialKind.SESSION, "private-session-key"),
     )
-    runner = RemoteTcpRunner(target, network_policy=_network())
+    runner = RemoteTcpRunner(_challenge(endpoint), target, network_policy=_network())
     serialized = json.dumps(runner.describe(), sort_keys=True)
 
     assert runner.describe()["credential_ref_present"] is True
@@ -123,8 +161,10 @@ def test_remote_tcp_session_limits_and_closed_state_fail_closed() -> None:
     thread = threading.Thread(target=_serve_once, args=(listener, errors), daemon=True)
     thread.start()
 
+    endpoint = f"tcp://127.0.0.1:{port}"
     runner = RemoteTcpRunner(
-        RemoteTargetSpec(f"tcp://127.0.0.1:{port}", RemoteTransport.TCP),
+        _challenge(endpoint),
+        RemoteTargetSpec(endpoint, RemoteTransport.TCP),
         network_policy=_network(),
         max_send_bytes=len(REQUEST),
         max_read_bytes=len(RESPONSE),
