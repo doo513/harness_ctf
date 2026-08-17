@@ -59,6 +59,19 @@ def main() -> int:
         if not all(r.ok for r in results):
             raise AssertionError(json.dumps(diagnostics, sort_keys=True, indent=2))
 
+        observed_records = []
+        for result in results:
+            output = result.output or {}
+            stdout = output.get("stdout") if isinstance(output, dict) else None
+            if isinstance(stdout, str):
+                try:
+                    observed_records.append(json.loads(stdout.strip()))
+                except json.JSONDecodeError:
+                    observed_records.append({"unparsed_stdout": stdout, "stderr": output.get("stderr")})
+            else:
+                observed_records.append({"missing_stdout": True, "output": output})
+        print("CONTROL_DIAGNOSTICS=" + json.dumps(observed_records, sort_keys=True))
+
         store = ArtifactStore(root / "artifacts")
         refs = []
         observations = []
