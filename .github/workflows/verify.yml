@@ -78,6 +78,8 @@ jobs:
         run: sudo -E "$(command -v python)" scripts/pwn_crash_semantic_probe.py
       - name: Controlled QEMU AArch64 crash runner probe
         run: sudo -E "$(command -v python)" scripts/target_runner_qemu_probe.py
+      - name: Controlled operational remote TCP runner probe
+        run: python scripts/target_runner_remote_tcp_probe.py
       - name: Live Pwn x86_64 control-flow semantic probe
         run: sudo -E "$(command -v python)" scripts/pwn_control_semantic_probe.py
       - name: Live Pwn local-proof semantic probe
