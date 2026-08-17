@@ -37,9 +37,6 @@ def main() -> int:
         asm.write_text(ASM, encoding="utf-8")
         subprocess.run(["/usr/bin/gcc", "-nostdlib", "-no-pie", "-Wl,--build-id=none", "-o", str(target), str(asm)], check=True)
 
-        # Canonical lower-half, intentionally unmapped x86_64 address.  A
-        # non-canonical 0x4141414141414141 faults at RET before RIP is loaded,
-        # which cannot demonstrate instruction-pointer control.
         marker = 0x0000414141414141
         data = marker.to_bytes(8, "little") + b"B" * 24
         input_b64 = base64.b64encode(data).decode("ascii")
@@ -75,6 +72,9 @@ def main() -> int:
             else:
                 observed_records.append({"missing_stdout": True, "output": output})
         print("CONTROL_DIAGNOSTICS=" + json.dumps(observed_records, sort_keys=True))
+        first = observed_records[0]
+        assert first.get("schema_version") == 2
+        assert first.get("runtime", {}).get("runtime_kind") == "native"
 
         store = ArtifactStore(root / "artifacts")
         refs = []
@@ -89,11 +89,20 @@ def main() -> int:
             "claim_evidence_refs":refs,
             "claim_key":"ctf.pwn.control_flow",
         }
-        candidate = {"target_sha256":target_sha, "input_sha256":input_sha, "register":"rip", "value":marker, "input_offset":0}
+        candidate = {
+            "target_sha256":target_sha,
+            "input_sha256":input_sha,
+            "register":"rip",
+            "value":marker,
+            "input_offset":0,
+            "runtime_fingerprint":first["runtime_fingerprint"],
+            "launch_fingerprint":first["launch_fingerprint"],
+        }
         verifier = ControlFlowVerifier()
         accepted = verifier.verify(candidate, context)
         assert accepted.verified, accepted.reason
         assert not verifier.verify({**candidate, "value":0x0000424242424242}, context).verified
+        assert not verifier.verify({**candidate, "runtime_fingerprint":"0" * 64}, context).verified
         one = dict(context)
         one["claim_evidence_refs"] = [refs[0]]
         assert not verifier.verify(candidate, one).verified
@@ -107,6 +116,8 @@ def main() -> int:
             "evidence_count":2,
             "target_sha256":target_sha,
             "input_sha256":input_sha,
+            "runtime_fingerprint":first["runtime_fingerprint"],
+            "launch_fingerprint":first["launch_fingerprint"],
         }, sort_keys=True, indent=2))
     return 0
 
