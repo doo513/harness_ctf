@@ -87,3 +87,5 @@ jobs:
         run: python scripts/pwn_hypothesis_dedupe_probe.py
       - name: Controlled Pwn CTF recovery-progress integration probe
         run: python scripts/pwn_recovery_progress_probe.py
+      - name: Controlled benchmark integrity probe
+        run: python scripts/evaluation_integrity_probe.py
