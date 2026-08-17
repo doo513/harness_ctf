@@ -24,6 +24,10 @@ def normalize_connection_endpoint(connection_info: str | None) -> str | None:
     if connection_info is None or not connection_info.strip():
         return None
     text = connection_info.strip()
+    parsed = urlsplit(text)
+    if parsed.scheme in {"http", "https"}:
+        RemoteTargetSpec(endpoint=text, transport=RemoteTransport.HTTP)
+        return text
     if text.startswith("tcp://"):
         endpoint = text
     else:
@@ -43,8 +47,6 @@ def normalize_connection_endpoint(connection_info: str | None) -> str | None:
         if ":" in host and not host.startswith("["):
             host = f"[{host}]"
         endpoint = f"tcp://{host}:{port}"
-    # Reuse the existing structured operational endpoint validator rather than
-    # making CompetitionAdapter a second network-scope authority.
     RemoteTargetSpec(endpoint=endpoint, transport=RemoteTransport.TCP)
     return endpoint
 
