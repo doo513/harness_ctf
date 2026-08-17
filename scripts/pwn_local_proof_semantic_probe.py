@@ -26,7 +26,13 @@ fi
 exit 7
 """
 
+# A writable workspace would let an actor alter the target after identity
+# validation. Treat successful mutation as a hard failure, then run the exact
+# target RuntimeLaunch only when the workspace seal blocks the write.
 EXPLOIT = """#!/bin/sh
+if printf '# mutation\\n' >> "$1" 2>/dev/null; then
+    exit 91
+fi
 printf 'ctf-local-proof-secret-513\\n' | "$@"
 """
 
@@ -46,7 +52,10 @@ def main() -> int:
         _write_exec(target, TARGET)
         _write_exec(exploit, EXPLOIT)
 
-        backend = LinuxNamespaceSandboxBackend(network_policy=NetworkPolicy.DENY)
+        backend = LinuxNamespaceSandboxBackend(
+            network_policy=NetworkPolicy.DENY,
+            workspace_writable=False,
+        )
         att = backend.isolation_attestation(workspace=workspace)
         if att.source != "runtime_probe" or not att.strong_filesystem_boundary:
             raise RuntimeError(f"live filesystem-isolated namespace unavailable: {att.evidence}")
@@ -70,7 +79,8 @@ def main() -> int:
         )
         assert receipt.schema_version == 2
         assert receipt.accepted
-        assert receipt.independence_level == "operator_fixed_digest_and_filesystem_isolation"
+        assert receipt.independence_level == "sealed_integrity_and_filesystem_isolation"
+        assert hashlib.sha256(target.read_bytes()).hexdigest() == target_sha
 
         store = ArtifactStore(root / "artifacts")
         ref = persist_local_proof_receipt(store, receipt)
@@ -134,6 +144,28 @@ def main() -> int:
         }
         assert not verifier.verify(candidate, bad_context).verified
 
+        # A writable Base workspace must never produce an accepted P3 receipt.
+        writable_backend = LinuxNamespaceSandboxBackend(
+            network_policy=NetworkPolicy.DENY,
+            workspace_writable=True,
+        )
+        writable_oracle = ExecutableDigestLocalProofOracle(
+            expected_stdout_sha256=expected,
+            backend=writable_backend,
+            timeout_seconds=3.0,
+            target_runner=NativeRunner("native-local-proof"),
+            expected_target_sha256=target_sha,
+        )
+        unsealed = evaluate_local_proof(
+            writable_oracle,
+            workspace=workspace,
+            target_path="target.sh",
+            exploit_path="exploit.sh",
+            environment_fingerprint=env_fp,
+        )
+        assert not unsealed.accepted
+        assert unsealed.independence_level == "operator_fixed_digest_unsealed_workspace"
+
         assert proof_level_from_verified_keys({"ctf.pwn.remote_behavior"}) is None
         assert proof_level_from_verified_keys({
             "ctf.pwn.arch",
@@ -147,6 +179,7 @@ def main() -> int:
             "all_passed": True,
             "attestation_source": att.source,
             "filesystem_isolated": att.strong_filesystem_boundary,
+            "workspace_read_only": True,
             "target_sha256": receipt.target_sha256,
             "exploit_sha256": receipt.exploit_sha256,
             "environment_fingerprint": receipt.environment_fingerprint,
@@ -154,6 +187,8 @@ def main() -> int:
             "launch_fingerprint": receipt.launch_fingerprint,
             "oracle_id": receipt.oracle_id,
             "accepted": receipt.accepted,
+            "target_mutation_blocked": True,
+            "writable_workspace_rejected": True,
             "actor_source_rejected": True,
             "rejected_oracle_rejected": True,
             "runtime_tamper_rejected": True,
