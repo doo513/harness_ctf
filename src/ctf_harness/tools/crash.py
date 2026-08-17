@@ -11,7 +11,7 @@ from harness.core.tools import SandboxedArgvToolSpec, SideEffect
 from ctf_harness.target.runners import NativeRunner, TargetRunner
 
 
-_PROBE_SCRIPT = r'''import base64,hashlib,json,pathlib,subprocess,sys
+_PROBE_SCRIPT = r'''import base64,hashlib,json,os,pathlib,subprocess,sys
 
 def canonical_hash(value):
     raw=json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(",",":"),default=str).encode("utf-8")
@@ -31,11 +31,17 @@ def tree_fingerprint(root):
     entries=[]
     for item in sorted(root.rglob("*"),key=lambda p:p.relative_to(root).as_posix()):
         rel=item.relative_to(root).as_posix()
-        if item.is_symlink(): raise RuntimeError("runtime tree contains symbolic link: "+rel)
+        if item.is_symlink():
+            target=os.readlink(item)
+            if not target or "\x00" in target or pathlib.Path(target).is_absolute(): raise RuntimeError("runtime tree contains unsupported symbolic link: "+rel)
+            resolved=(item.parent/target).resolve(strict=True)
+            try: resolved.relative_to(root)
+            except ValueError as e: raise RuntimeError("runtime tree symbolic link escapes tree: "+rel) from e
+            entries.append({"kind":"symlink","path":rel,"target":target});continue
         if item.is_dir(): continue
         if not item.is_file(): raise RuntimeError("runtime tree contains non-regular entry: "+rel)
-        entries.append({"path":rel,"sha256":sha_file(item)})
-    return canonical_hash({"files":entries})
+        entries.append({"kind":"file","path":rel,"sha256":sha_file(item)})
+    return canonical_hash({"entries":entries})
 
 target_path=pathlib.Path(sys.argv[1])
 data=base64.b64decode(sys.argv[2],validate=True)
