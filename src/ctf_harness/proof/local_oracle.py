@@ -9,7 +9,6 @@ from typing import Protocol
 from harness.core.oracles import CompletionResult
 from harness.core.sandbox import ExecutionBackend
 from harness.core.storage import ArtifactStore, canonical_hash
-
 from ctf_harness.target.runners import NativeRunner, TargetRunner
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -37,15 +36,7 @@ class LocalProofReceipt:
 
 class LocalProofOracle(Protocol):
     name: str
-
-    def evaluate(
-        self,
-        *,
-        workspace: Path,
-        target_path: str,
-        exploit_path: str,
-        environment_fingerprint: str,
-    ) -> CompletionResult: ...
+    def evaluate(self, *, workspace: Path, target_path: str, exploit_path: str, environment_fingerprint: str) -> CompletionResult: ...
 
 
 def _sha256_file(path: Path) -> str:
@@ -76,13 +67,12 @@ def _safe_workspace_file(workspace: Path, value: str, *, label: str) -> tuple[Pa
 
 
 class ExecutableDigestLocalProofOracle:
-    """Operator-fixed local proof oracle for deterministic exploit outputs.
+    """Operator-fixed P3 oracle using one hash-bound TargetRunner launch.
 
-    The actor controls the exploit file, but not the expected output digest,
-    target runner profile, or oracle decision. The exploit receives the exact
-    operator-configured target RuntimeLaunch argv as its arguments. The receipt
-    therefore binds target, exploit, environment, runtime, and concrete launch
-    identity without making the runner itself a proof authority.
+    The exploit is actor-controlled, so the accepted path requires a live strong
+    filesystem boundary *and* a read-only workspace. This prevents the exploit
+    from changing the admitted target, loader, or workspace sysroot after their
+    identities are checked and before using the supplied RuntimeLaunch argv.
     """
 
     name = "pwn_local_executable_digest"
@@ -108,22 +98,14 @@ class ExecutableDigestLocalProofOracle:
         self.target_runner = target_runner or NativeRunner("native-default")
         self.expected_target_sha256 = expected_target_sha256
         contract_hash = hashlib.sha256(
-            (
-                "v2|argv=exploit,target-runtime-argv"
-                f"|stdout_sha256={expected_stdout_sha256}"
-                f"|runner_profile={self.target_runner.profile_id}"
-            ).encode()
+            ("v2|argv=exploit,target-runtime-argv"
+             f"|stdout_sha256={expected_stdout_sha256}"
+             f"|runner_profile={self.target_runner.profile_id}"
+             "|workspace=read-only").encode()
         ).hexdigest()
         self.oracle_id = f"{self.name}:{contract_hash[:16]}"
 
-    def evaluate(
-        self,
-        *,
-        workspace: Path,
-        target_path: str,
-        exploit_path: str,
-        environment_fingerprint: str,
-    ) -> CompletionResult:
+    def evaluate(self, *, workspace: Path, target_path: str, exploit_path: str, environment_fingerprint: str) -> CompletionResult:
         workspace = Path(workspace).expanduser().resolve()
         target, target_rel = _safe_workspace_file(workspace, target_path, label="target_path")
         exploit, exploit_rel = _safe_workspace_file(workspace, exploit_path, label="exploit_path")
@@ -133,9 +115,11 @@ class ExecutableDigestLocalProofOracle:
             expected_target_sha256=self.expected_target_sha256,
         )
         attestation = self.backend.isolation_attestation(workspace=workspace)
+        workspace_read_only = getattr(self.backend, "workspace_writable", None) is False
         trusted_boundary = (
             attestation.source == "runtime_probe"
             and bool(getattr(attestation, "strong_filesystem_boundary", False))
+            and workspace_read_only
         )
         target_sha = _sha256_file(target)
         exploit_sha = _sha256_file(exploit)
@@ -150,6 +134,7 @@ class ExecutableDigestLocalProofOracle:
             "runtime_fingerprint": runtime_fingerprint,
             "launch_argv": list(launch.argv),
             "launch_fingerprint": launch_fingerprint,
+            "workspace_read_only": workspace_read_only,
         }
         if not trusted_boundary:
             evidence = [{
@@ -159,10 +144,10 @@ class ExecutableDigestLocalProofOracle:
             }]
             return CompletionResult(
                 accepted=False,
-                reason="local proof oracle requires a live filesystem-isolated execution backend",
+                reason="local proof oracle requires a live filesystem-isolated backend with read-only workspace",
                 evidence=evidence,
                 oracle_id=self.oracle_id,
-                independence_level="operator_fixed_digest_unisolated",
+                independence_level="operator_fixed_digest_unsealed_workspace",
                 evidence_hash=canonical_hash(evidence),
             )
 
@@ -182,29 +167,15 @@ class ExecutableDigestLocalProofOracle:
             "stderr_sha256": stderr_sha,
             "sandbox_source": attestation.source,
         }]
-        accepted = (
-            result.returncode == 0
-            and result.timed_out is False
-            and stdout_sha == self.expected_stdout_sha256
-        )
+        accepted = result.returncode == 0 and result.timed_out is False and stdout_sha == self.expected_stdout_sha256
         return CompletionResult(
             accepted=accepted,
-            reason=(
-                "operator-fixed local proof output matched"
-                if accepted
-                else "local proof output did not satisfy the operator-fixed contract"
-            ),
+            reason="operator-fixed local proof output matched" if accepted else "local proof output did not satisfy the operator-fixed contract",
             evidence=evidence,
             oracle_id=self.oracle_id,
-            independence_level="operator_fixed_digest_and_filesystem_isolation",
+            independence_level="sealed_integrity_and_filesystem_isolation",
             evidence_hash=canonical_hash(evidence),
-            coverage={
-                "target": 1,
-                "exploit": 1,
-                "runtime": 1,
-                "launch": 1,
-                "stdout_contract": 1,
-            },
+            coverage={"target": 1, "exploit": 1, "runtime": 1, "launch": 1, "workspace_seal": 1, "stdout_contract": 1},
         )
 
 
@@ -213,28 +184,22 @@ def _runtime_identity_from_result(result: CompletionResult) -> tuple[str, str]:
     if not isinstance(evidence, list) or not evidence or not isinstance(evidence[0], dict):
         raise ValueError("local proof oracle did not return runtime-bound evidence")
     first = evidence[0]
-    runtime_fingerprint = first.get("runtime_fingerprint")
-    launch_fingerprint = first.get("launch_fingerprint")
-    if not isinstance(runtime_fingerprint, str) or not _HEX64.fullmatch(runtime_fingerprint):
+    runtime_fp = first.get("runtime_fingerprint")
+    launch_fp = first.get("launch_fingerprint")
+    if not isinstance(runtime_fp, str) or not _HEX64.fullmatch(runtime_fp):
         raise ValueError("local proof oracle runtime_fingerprint is invalid")
-    if not isinstance(launch_fingerprint, str) or not _HEX64.fullmatch(launch_fingerprint):
+    if not isinstance(launch_fp, str) or not _HEX64.fullmatch(launch_fp):
         raise ValueError("local proof oracle launch_fingerprint is invalid")
     runtime = first.get("runtime")
-    launch_argv = first.get("launch_argv")
-    if not isinstance(runtime, dict) or canonical_hash(runtime) != runtime_fingerprint:
+    argv = first.get("launch_argv")
+    if not isinstance(runtime, dict) or canonical_hash(runtime) != runtime_fp:
         raise ValueError("local proof oracle runtime identity is inconsistent")
-    if not isinstance(launch_argv, list) or not launch_argv:
+    if not isinstance(argv, list) or not argv:
         raise ValueError("local proof oracle launch argv is unavailable")
-    expected_launch = canonical_hash(
-        {
-            "target_sha256": first.get("target_sha256"),
-            "runtime_fingerprint": runtime_fingerprint,
-            "argv": launch_argv,
-        }
-    )
-    if expected_launch != launch_fingerprint:
+    expected = canonical_hash({"target_sha256": first.get("target_sha256"), "runtime_fingerprint": runtime_fp, "argv": argv})
+    if expected != launch_fp:
         raise ValueError("local proof oracle launch identity is inconsistent")
-    return runtime_fingerprint, launch_fingerprint
+    return runtime_fp, launch_fp
 
 
 def evaluate_local_proof(
@@ -260,7 +225,7 @@ def evaluate_local_proof(
         raise ValueError("local proof oracle must return a stable oracle_id")
     if not isinstance(result.evidence_hash, str) or not _HEX64.fullmatch(result.evidence_hash):
         raise ValueError("local proof oracle must return a canonical evidence_hash")
-    runtime_fingerprint, launch_fingerprint = _runtime_identity_from_result(result)
+    runtime_fp, launch_fp = _runtime_identity_from_result(result)
     return LocalProofReceipt(
         schema_version=2,
         kind="pwn_local_proof_receipt",
@@ -268,8 +233,8 @@ def evaluate_local_proof(
         target_sha256=_sha256_file(target),
         exploit_sha256=_sha256_file(exploit),
         environment_fingerprint=environment_fingerprint,
-        runtime_fingerprint=runtime_fingerprint,
-        launch_fingerprint=launch_fingerprint,
+        runtime_fingerprint=runtime_fp,
+        launch_fingerprint=launch_fp,
         oracle_id=result.oracle_id,
         independence_level=str(result.independence_level),
         oracle_evidence_hash=result.evidence_hash,
@@ -278,10 +243,5 @@ def evaluate_local_proof(
     )
 
 
-def persist_local_proof_receipt(
-    store: ArtifactStore,
-    receipt: LocalProofReceipt,
-    *,
-    name: str = "pwn-local-proof.json",
-) -> str:
+def persist_local_proof_receipt(store: ArtifactStore, receipt: LocalProofReceipt, *, name: str = "pwn-local-proof.json") -> str:
     return store.put_json(name, {"ok": True, "output": receipt.dump(), "error": None})
