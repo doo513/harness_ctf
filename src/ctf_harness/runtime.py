@@ -10,9 +10,15 @@ from harness.core.storage import IntegrityError, canonical_hash
 
 from ctf_harness.hypotheses.models import Hypothesis
 from ctf_harness.hypotheses.pool import DurableHypothesisLedger, fingerprint
+from ctf_harness.recovery.adapter import (
+    CTFFailureKind,
+    mappings_descriptor,
+    to_core_failure,
+)
 
 
 HYPOTHESIS_GUARD_SCHEMA = "ctf-hypothesis-guard-v1"
+CTF_RECOVERY_ADAPTER_SCHEMA = "ctf-recovery-adapter-v1"
 _LEDGER_ANCHOR_EVENT = "ctf.hypothesis.ledger_anchor"
 _HYPOTHESIS_FIELDS = {
     "id",
@@ -26,12 +32,12 @@ _HYPOTHESIS_FIELDS = {
 
 
 class VerifiedCTFRuntime(HarnessRuntime):
-    """Base runtime plus a speculative, non-authoritative CTF hypothesis guard.
+    """Base runtime plus CTF-specific speculative/control adapters.
 
-    The guard never writes verified facts or completion state. It only decides
-    whether an Actor-requested tool action may be dispatched again under the
-    same speculative hypothesis/evidence state. Base HarnessRuntime still owns
-    tool execution, receipts, failures, recovery, progress and completion.
+    CTF extensions may deny duplicate speculative actions and classify domain
+    failures, but never write verified facts or completion state. Base
+    HarnessRuntime remains the authority for tool execution, receipts, failure
+    routing, recovery transitions, progress and completion.
     """
 
     def __init__(self, *, require_hypothesis_for_tools: bool = True, **kwargs):
@@ -58,6 +64,7 @@ class VerifiedCTFRuntime(HarnessRuntime):
         self.metrics.setdefault("ctf_hypothesis_attempts", 0)
         self.metrics.setdefault("ctf_hypothesis_guard_blocks", 0)
         self.metrics.setdefault("ctf_hypothesis_refutations", 0)
+        self.metrics.setdefault("ctf_mapped_failures", 0)
 
     def _config_descriptor(self) -> dict[str, Any]:
         descriptor = super()._config_descriptor()
@@ -71,6 +78,13 @@ class VerifiedCTFRuntime(HarnessRuntime):
             "ambiguous_resume_policy": "block_same_action_same_evidence",
             "ledger_integrity": "self_hash_plus_latest_base_event_anchor",
             "explicit_refutation": "registered_contradiction_evidence_required",
+            "truth_authority": "none",
+        }
+        descriptor["ctf_recovery_adapter"] = {
+            "schema_version": CTF_RECOVERY_ADAPTER_SCHEMA,
+            "mappings": mappings_descriptor(),
+            "routing_authority": "base_failure_router",
+            "recovery_authority": "base_runtime_recovery",
             "truth_authority": "none",
         }
         return descriptor
@@ -87,6 +101,64 @@ class VerifiedCTFRuntime(HarnessRuntime):
             raise ValueError("ctf_hypothesis.evidence_refs must be a list of artifact refs")
         identities = sorted({self._evidence_novelty_identity(ref) for ref in refs})
         return canonical_hash({"evidence_identities": identities})
+
+    def report_ctf_failure(
+        self,
+        kind: CTFFailureKind | str,
+        *,
+        message: str,
+        subject: str | None = None,
+        evidence_refs: list[str] | tuple[str, ...] = (),
+        retry_safe: bool | None = None,
+    ):
+        """Map one domain failure into Core failure/recovery without new authority.
+
+        This is a trusted runtime/domain-adapter API, not an Actor decision kind.
+        Evidence refs, when supplied, must already be registered durable Core
+        evidence. The returned object is the Base pending RecoveryTransition.
+        """
+        if not isinstance(evidence_refs, (list, tuple)) or any(
+            not isinstance(ref, str) for ref in evidence_refs
+        ):
+            raise ValueError("CTF failure evidence_refs must be a list/tuple of strings")
+
+        refs = list(dict.fromkeys(evidence_refs))
+        identities = sorted(self._evidence_novelty_identity(ref) for ref in refs)
+        evidence_state_digest = canonical_hash({"evidence_identities": identities})
+        facts_before = canonical_hash({k: v.dump() for k, v in self.state.facts.items()})
+
+        ctf_kind, mapping, core_failure = to_core_failure(
+            kind,
+            message=message,
+            subject=subject,
+            retry_safe=retry_safe,
+        )
+        self.fail(core_failure)
+        transition = self.state.pending_recovery
+        if transition is None:
+            raise IntegrityError("CTF failure mapping did not schedule a Base recovery transition")
+
+        facts_after = canonical_hash({k: v.dump() for k, v in self.state.facts.items()})
+        if facts_after != facts_before:
+            raise IntegrityError("CTF failure adapter mutated verified facts")
+
+        self.metrics["ctf_mapped_failures"] = int(self.metrics.get("ctf_mapped_failures", 0)) + 1
+        self.log("ctf.failure.mapped", {
+            "schema_version": CTF_RECOVERY_ADAPTER_SCHEMA,
+            "ctf_failure_kind": ctf_kind.value,
+            "core_failure_kind": mapping.core_failure.value,
+            "recovery_target": mapping.target,
+            "subject": subject,
+            "retry_safe": bool(core_failure.retry_safe),
+            "evidence_refs": refs,
+            "evidence_state_digest": evidence_state_digest,
+            "base_transition_id": transition.transition_id,
+            "base_recovery_action": transition.action.value,
+            "base_repeat_count": transition.repeat_count,
+            "truth_authority": "none",
+        })
+        self._persist_state("ctf.failure.mapped")
+        return transition
 
     def _parse_hypothesis(self, raw: Any) -> tuple[str, Hypothesis]:
         if not isinstance(raw, dict):
