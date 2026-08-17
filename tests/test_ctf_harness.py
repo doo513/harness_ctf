@@ -1,5 +1,5 @@
 from __future__ import annotations
-import hashlib,json,struct
+import json,struct
 from pathlib import Path
 import pytest
 from ctf_harness.locking import BaseLock,EXPECTED_BASE_COMMIT
@@ -23,7 +23,7 @@ from ctf_harness.recovery.adapter import map_failure
 from ctf_harness.progress.pwn import pwn_progress_snapshot
 RUNNER="sha256:"+"a"*64
 
-def root():return Path(__file__).resolve().parents[1]
+def root(): return Path(__file__).resolve().parents[1]
 def elf64(e_type=2,extra=b""):
  d=bytearray(64);d[:4]=b"\x7fELF";d[4]=2;d[5]=1;d[6]=1;struct.pack_into("<H",d,16,e_type);struct.pack_into("<H",d,18,62);struct.pack_into("<Q",d,24,0x401000);struct.pack_into("<Q",d,32,64);struct.pack_into("<H",d,52,64);struct.pack_into("<H",d,54,56);struct.pack_into("<H",d,56,0);return bytes(d)+extra
 
@@ -42,7 +42,7 @@ def test_wp01_symlink_and_unfrozen_runner_rejected(tmp_path):
  with pytest.raises(ValueError,match="symbolic links"):admit_artifact(link)
  with pytest.raises(ValueError):ChallengeManifest(challenge_id="x",event="e",description="d",challenge_revision="r",runner_image_digest="latest")
 def test_wp03_conservative_recon_and_non_authoritative_classification():
- e=inspect_elf_bytes(elf64(2));dyn=inspect_elf_bytes(elf64(3));hint=inspect_elf_bytes(elf64(2,b"__stack_chk_fail"));assert e.architecture=="x86_64" and e.pie is False and e.nx is None and e.canary_present is None;assert dyn.pie is None and hint.canary_present is True;a=assess_from_recon(file_type="ELF");assert not a.authoritative and a.candidates[0].category=="pwn"
+ e=inspect_elf_bytes(elf64(2));dyn=inspect_elf_bytes(elf64(3));hint=inspect_elf_bytes(elf64(2,b"__stack_chk_fail"));assert e.architecture=="x86_64" and e.pie is False and e.nx is None and e.canary_symbol_hint is None;assert dyn.pie is None and hint.canary_symbol_hint is True;a=assess_from_recon(file_type="ELF");assert not a.authoritative and a.candidates[0].category=="pwn"
 def test_wp03_workspace_confinement(tmp_path):
  w=tmp_path/"w";o=tmp_path/"o";w.mkdir();o.mkdir();(w/"t").write_bytes(elf64());h=make_pwn_recon_handler(w);assert h("t")["architecture"]=="x86_64";(o/"s").write_bytes(elf64());link=w/"escape"
  try:link.symlink_to(o/"s")
