@@ -1,14 +1,22 @@
 # WP08 — Dreamhack Challenge 103 Smoke Benchmark Attempt
 
-**Status:** `BLOCKED BEFORE ADMISSION — NO BENCHMARK RESULT RECORDED`
+**Status:** `SUPERSEDED — HANDOUT LATER SUPPLIED; SEE WP08_DREAMHACK_103_SMOKE_BENCHMARK.md`
 
-## Purpose
+## Historical purpose
 
-Attempt to use Dreamhack Wargame challenge `103` as a first real-world smoke input for the WP08 evaluation path.
+This document preserves the **first acquisition attempt** for Dreamhack Wargame challenge `103`. At that time the real handout could not be obtained through the available authenticated execution channels, so the attempt correctly stopped before admission.
 
-This is **not** counted as the fresh/private Pwn pilot benchmark. Dreamhack challenge 103 is a public wargame challenge, and no freshness/private-corpus claim is made.
+The user later supplied the challenge handout directly. The resumed artifact/recon/capability benchmark is recorded in:
 
-## Input supplied
+```text
+docs/verification/WP08_DREAMHACK_103_SMOKE_BENCHMARK.md
+```
+
+The original blocked result below remains preserved as failure-history evidence rather than being rewritten as an earlier success.
+
+This challenge is public and is **not** counted as the planned fresh/private Pwn effectiveness corpus.
+
+## Input supplied during the first attempt
 
 - Challenge URL: `https://dreamhack.io/wargame/challenges/103`
 - An authenticated Dreamhack session value was supplied out-of-band in the conversation.
@@ -17,27 +25,26 @@ This is **not** counted as the fresh/private Pwn pilot benchmark. Dreamhack chal
 ## Attempted acquisition
 
 1. Direct public page retrieval through the available web fetch path returned HTTP 405 for the challenge detail URL.
-2. Public web indexing exposed Dreamhack challenge-list pages but did not expose challenge 103 detail/artifact/VM metadata.
-3. The local work container could not resolve `dreamhack.io` through external DNS, so an authenticated `requests/curl` path could not be used.
-4. The available web fetch interface does not support attaching the supplied Dreamhack session cookie.
-5. No connected browser-automation plugin capable of applying the authenticated session was available.
+2. Public web indexing did not supply the authenticated challenge artifact/VM metadata needed for admission.
+3. The local work container could not use an authenticated direct Dreamhack HTTP path.
+4. The available web fetch interface could not attach the supplied Dreamhack session cookie.
+5. No connected browser-automation channel capable of applying the authenticated session was available.
 
-## Why the benchmark was stopped
+## Why the first attempt stopped
 
-WP08 admission requires the actual challenge manifest/artifact bytes and, for a remote proof run, the exact authorized challenge endpoint. None was acquired through an authenticated execution path.
+WP08 admission requires the actual challenge artifact bytes and, for a remote proof run, the exact authorized challenge endpoint. Those inputs were unavailable in the first attempt.
 
 The following were therefore **not fabricated or substituted**:
 
-- challenge title/category;
 - downloadable handout bytes;
 - artifact SHA-256 values;
 - VM host/port;
 - external flag-oracle response;
 - Minimal/Verified outcome records.
 
-Public writeups or search-derived solutions were not used as a replacement input because that would contaminate the intended smoke evaluation and would not prove that the harness solved the supplied challenge.
+Public writeups or search-derived challenge solutions were not used as replacement benchmark inputs.
 
-## Result
+## First-attempt result
 
 ```text
 challenge_admitted = false
@@ -48,27 +55,12 @@ benchmark_result_recorded = false
 effectiveness_measured = false
 ```
 
-## Unblocking condition
+## Resume history
 
-Any one of the following is sufficient to resume the smoke benchmark without exposing the session token:
+The later direct handout upload removed the artifact-acquisition blocker. That did **not** retroactively convert this first attempt into a successful admission. The later run is a separate smoke benchmark and discovered additional execution/architecture/controller boundaries.
 
-1. provide/upload the Dreamhack challenge handout downloaded from the authenticated page and provide the active challenge `nc host port` endpoint; or
-2. provide a connected browser/HTTP execution channel that can apply the authenticated Dreamhack session without persisting it in GitHub.
+## Historical truthfulness decision
 
-Once the real handout and endpoint are available, the intended path is:
+**Decision for this attempt:** `BLOCKED / NO RESULT`.
 
-```text
-artifact admission
-→ manifest/corpus identity
-→ same fixed experiment contract
-→ Minimal arm
-→ Verified arm
-→ independent flag adjudication
-→ paired benchmark record
-```
-
-## Truthfulness decision
-
-**Decision:** `BLOCKED / NO RESULT`.
-
-This attempt demonstrates an input-acquisition limitation only. It provides no evidence for or against harness solve-rate effectiveness.
+**Current continuation:** `SUPERSEDED BY WP08_DREAMHACK_103_SMOKE_BENCHMARK.md`.
