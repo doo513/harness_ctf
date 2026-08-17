@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-EXPECTED_BASE_COMMIT = "20079ffd90cc063958f084da8286e05f38ccdef0"
+EXPECTED_BASE_COMMIT = "75834ac1ecb6c022771c2efee1f19495f356ee76"
 EXPECTED_BASE_PACKAGE = "verified-state-harness"
 EXPECTED_BASE_VERSION = "0.9.1"
 
