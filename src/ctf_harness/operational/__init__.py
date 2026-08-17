@@ -1,4 +1,5 @@
 from .models import (
+    ActorCompleteBehavior,
     AgentSpec,
     CredentialKind,
     CredentialRef,
@@ -9,12 +10,16 @@ from .models import (
     OutputPolicy,
     RemoteTargetSpec,
     RemoteTransport,
+    RunIntent,
     RuntimeKind,
     SolveBudget,
     SolveSpec,
+    TerminationPolicy,
+    UnsupportedCapabilityBehavior,
 )
 
 __all__ = [
+    "ActorCompleteBehavior",
     "AgentSpec",
     "CredentialKind",
     "CredentialRef",
@@ -25,7 +30,10 @@ __all__ = [
     "OutputPolicy",
     "RemoteTargetSpec",
     "RemoteTransport",
+    "RunIntent",
     "RuntimeKind",
     "SolveBudget",
     "SolveSpec",
+    "TerminationPolicy",
+    "UnsupportedCapabilityBehavior",
 ]
