@@ -20,6 +20,10 @@ _LEVEL = {name: getattr(VerificationLevel, name) for name in ("LOGICAL", "EXECUT
 class VerifiedCTFProfile(CTFProfile):
     name = "verified_ctf"
 
+    def __init__(self, *, workspace=".", external_oracle=None, execution_backend=None, flag_completion_oracle=None):
+        super().__init__(workspace=workspace, external_oracle=external_oracle, execution_backend=execution_backend)
+        self.flag_completion_oracle = flag_completion_oracle
+
     def tools(self):
         tools = super().tools()
         tools["argv"] = make_argv_tool(self.workspace, backend=self.execution_backend)
@@ -59,6 +63,11 @@ class VerifiedCTFProfile(CTFProfile):
             )
             rules.append(ClaimContractRule(claim_class=spec.key_prefix, key_prefix=spec.key_prefix, contract=contract, allowed_verifiers=(spec.verifier,)))
         return ClaimContractRegistry(tuple(rules))
+
+    def completion_oracle(self):
+        if self.flag_completion_oracle is not None:
+            return self.flag_completion_oracle
+        return super().completion_oracle()
 
     def task_progress_snapshot(self, *, goal, state):
         facts = getattr(state, "facts", {})
