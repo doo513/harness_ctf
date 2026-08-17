@@ -64,6 +64,8 @@ def validate_ctf_actor_decision(decision: Decision, *, require_hypothesis_for_to
 class CTFLLMController(LLMController):
     """Thin CTF prompt/schema adapter over Base LLMController."""
 
+    revision = "ctf-llm-controller-v1"
+
     SYSTEM = LLMController.SYSTEM + """
 
 CTF extension rules:
