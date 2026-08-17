@@ -28,7 +28,7 @@ class PwnReconSnapshot:
     endianness: str
     pie: bool | None
     nx: bool | None
-    canary_present: bool | None
+    canary_symbol_hint: bool | None
     interpreter: str | None
     entrypoint: int
     evidence_refs: tuple[str, ...] = ()
@@ -77,8 +77,8 @@ def inspect_elf_bytes(data: bytes, *, evidence_refs=()) -> PwnReconSnapshot:
             tag, value = struct.unpack_from(dyn_fmt, data, cursor); cursor += dyn_entry_size
             if tag == DT_NULL: break
             if tag == DT_FLAGS_1: pie = bool(int(value) & DF_1_PIE) if e_type == 3 else False
-    canary_present: bool | None = True if b"__stack_chk_fail" in data else None
-    return PwnReconSnapshot(1,"pwn_recon_snapshot",digest,"ELF",_ET.get(e_type,f"TYPE:{e_type}"),_MACHINE.get(machine,f"machine:{machine}"),bits,endianness,pie,nx,canary_present,interpreter,entry,tuple(evidence_refs))
+    canary_symbol_hint: bool | None = True if b"__stack_chk_fail" in data else None
+    return PwnReconSnapshot(1,"pwn_recon_snapshot",digest,"ELF",_ET.get(e_type,f"TYPE:{e_type}"),_MACHINE.get(machine,f"machine:{machine}"),bits,endianness,pie,nx,canary_symbol_hint,interpreter,entry,tuple(evidence_refs))
 
 
 def inspect_elf(path: str | Path, *, evidence_refs=()) -> PwnReconSnapshot:
