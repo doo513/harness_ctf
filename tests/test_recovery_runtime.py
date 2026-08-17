@@ -51,7 +51,12 @@ def test_failure_taxonomy_covers_roadmap_and_is_typed():
     assert map_failure("FLAG_REJECTED").core_failure is FailureKind.VERIFICATION_FAILED
     assert map_failure("FLAG_REJECTED").target == "return_to_proof"
     assert map_failure("TOOL_MISSING").target == "install_or_substitute_tool"
-    assert map_failure("HYPOTHESIS_REFUTED").core_failure is FailureKind.HYPOTHESIS_REFUTED
+    # These are CTF sidecar/routing states, not Core logical hypothesis keys;
+    # routing them to Core HYPOTHESIS_REFUTED would misuse ROLLBACK target semantics.
+    assert map_failure("HYPOTHESIS_REFUTED").core_failure is FailureKind.NO_PROGRESS
+    assert map_failure("HYPOTHESIS_REFUTED").target == "close_branch"
+    assert map_failure("CATEGORY_MISCLASSIFIED").core_failure is FailureKind.NO_PROGRESS
+    assert map_failure("CATEGORY_MISCLASSIFIED").target == "category_switch"
     with pytest.raises(ValueError, match="unknown CTF failure kind"):
         map_failure("UNKNOWN")
 
@@ -79,6 +84,21 @@ def test_recon_incomplete_maps_to_base_observe_and_preserves_facts(tmp_path):
     assert directive["action"] == RecoveryAction.OBSERVE.value
     assert directive["target"] == "targeted_recon"
     assert runtime.state.facts == facts_before
+
+
+def test_ctf_sidecar_branch_change_maps_to_replan_not_core_rollback(tmp_path):
+    runtime = _runtime(tmp_path, name="branch")
+    transition = runtime.report_ctf_failure(
+        "HYPOTHESIS_REFUTED",
+        message="controlled sidecar hypothesis was refuted",
+        subject="overflow_branch",
+    )
+    assert transition.failure_kind is FailureKind.NO_PROGRESS
+    assert transition.action is RecoveryAction.REPLAN
+    assert transition.target == "close_branch"
+    runtime.step_once()
+    assert runtime.state.recovery_directive["action"] == RecoveryAction.REPLAN.value
+    assert runtime.state.recovery_directive["target"] == "close_branch"
 
 
 def test_environment_mismatch_defaults_to_observe_not_unsafe_retry(tmp_path):
