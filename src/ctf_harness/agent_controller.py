@@ -5,19 +5,37 @@ from typing import Any
 from harness.core.controller import Decision, LLMController
 
 _CTF_HYPOTHESIS_FIELDS = {"id", "category", "target", "vulnerability_class", "primitive", "claim", "evidence_refs"}
+_FIELD_LIMITS = {
+    "id": 128,
+    "category": 64,
+    "target": 256,
+    "vulnerability_class": 128,
+    "primitive": 128,
+    "claim": 1024,
+}
+_TOOL_NAME_LIMIT = 128
+_MAX_EVIDENCE_REFS = 32
+_EVIDENCE_REF_LIMIT = 256
 
 
-def _require_nonempty_text(raw: dict[str, Any], field: str) -> None:
+def _require_bounded_text(raw: dict[str, Any], field: str) -> None:
     value = raw.get(field)
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"ctf_hypothesis.{field} must be a non-empty string")
+    if len(value) > _FIELD_LIMITS[field]:
+        raise ValueError(
+            f"ctf_hypothesis.{field} exceeds {_FIELD_LIMITS[field]} character limit"
+        )
 
 
 def validate_ctf_actor_decision(decision: Decision, *, require_hypothesis_for_tools: bool = True) -> None:
-    """Validate only CTF-specific syntax; runtime still owns evidence integrity."""
+    """Validate only CTF-specific model syntax; runtime owns evidence integrity."""
     decision.validate()
     if decision.kind != "tool":
         return
+    tool = decision.payload.get("tool")
+    if not isinstance(tool, str) or len(tool) > _TOOL_NAME_LIMIT:
+        raise ValueError(f"CTF tool name exceeds {_TOOL_NAME_LIMIT} character limit")
     raw = decision.payload.get("ctf_hypothesis")
     if raw is None:
         if require_hypothesis_for_tools:
@@ -29,10 +47,18 @@ def validate_ctf_actor_decision(decision: Decision, *, require_hypothesis_for_to
     if extras:
         raise ValueError("unsupported ctf_hypothesis fields: " + ", ".join(sorted(extras)))
     for field in ("id", "category", "target", "vulnerability_class", "primitive", "claim"):
-        _require_nonempty_text(raw, field)
+        _require_bounded_text(raw, field)
     refs = raw.get("evidence_refs", [])
     if not isinstance(refs, list) or any(not isinstance(ref, str) for ref in refs):
         raise ValueError("ctf_hypothesis.evidence_refs must be a list of strings")
+    if len(refs) > _MAX_EVIDENCE_REFS:
+        raise ValueError(
+            f"ctf_hypothesis.evidence_refs exceeds {_MAX_EVIDENCE_REFS} item limit"
+        )
+    if any(len(ref) > _EVIDENCE_REF_LIMIT for ref in refs):
+        raise ValueError(
+            f"ctf_hypothesis evidence ref exceeds {_EVIDENCE_REF_LIMIT} character limit"
+        )
 
 
 class CTFLLMController(LLMController):
@@ -55,5 +81,8 @@ CTF extension rules:
 
     def decide(self, goal, state, context):
         decision = super().decide(goal, state, context)
-        validate_ctf_actor_decision(decision, require_hypothesis_for_tools=self.require_hypothesis_for_tools)
+        validate_ctf_actor_decision(
+            decision,
+            require_hypothesis_for_tools=self.require_hypothesis_for_tools,
+        )
         return decision
