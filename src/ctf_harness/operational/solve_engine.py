@@ -12,21 +12,16 @@ from harness.core.storage import atomic_write_json, canonical_hash
 from ctf_harness.agent_controller import CTFLLMController
 from ctf_harness.agent_runtime import AgentCTFRuntime
 from ctf_harness.durable_runtime import file_sha256, load_durable_runtime_metrics
-from ctf_harness.operational.models import (
-    AgentSpec,
-    LocalTargetSpec,
-    NetworkPolicy,
-    SolveSpec,
-)
+from ctf_harness.operational.models import AgentSpec, LocalTargetSpec, NetworkPolicy, SolveSpec
 from ctf_harness.profile import VerifiedCTFProfile
 
 
 @dataclass(frozen=True)
 class SolveRuntimeBinding:
-    """Operator-prepared objects that are checked against one immutable SolveSpec.
+    """Operator wiring checked against one immutable SolveSpec.
 
-    The binding is wiring, not authority. SolveEngine verifies every field it can
-    derive from the operational contract before creating the Base runtime.
+    `target_relpath` is an execution location only. `artifact_ref` remains the
+    manifest-level logical identity and the admitted SHA-256 remains authority.
     """
 
     profile: VerifiedCTFProfile
@@ -34,6 +29,7 @@ class SolveRuntimeBinding:
     controller: CTFLLMController
     workspace: Path
     run_dir: Path
+    target_relpath: str
     agent: AgentSpec
     oracle_policy_id: str
 
@@ -46,6 +42,11 @@ class SolveRuntimeBinding:
             raise ValueError("solve binding controller must be CTFLLMController")
         if not isinstance(self.workspace, Path) or not isinstance(self.run_dir, Path):
             raise ValueError("solve binding workspace/run_dir must be pathlib.Path")
+        if not isinstance(self.target_relpath, str) or not self.target_relpath.strip():
+            raise ValueError("solve binding target_relpath must be non-empty")
+        raw = Path(self.target_relpath)
+        if raw.is_absolute():
+            raise ValueError("solve binding target_relpath must be workspace-relative")
         if not isinstance(self.agent, AgentSpec):
             raise ValueError("solve binding agent must be AgentSpec")
         if not isinstance(self.oracle_policy_id, str) or not self.oracle_policy_id.strip():
@@ -53,8 +54,18 @@ class SolveRuntimeBinding:
         workspace = self.workspace.resolve()
         if not workspace.exists() or not workspace.is_dir():
             raise ValueError("solve binding workspace must exist")
-        if self.run_dir.exists() and any(self.run_dir.iterdir()):
-            raise ValueError("solve binding run_dir must be empty before execution")
+        resolved_target = (workspace / raw).resolve(strict=True)
+        try:
+            resolved_target.relative_to(workspace)
+        except ValueError as exc:
+            raise ValueError("solve binding target_relpath escapes workspace") from exc
+        if not resolved_target.is_file():
+            raise ValueError("solve binding target_relpath must resolve to a regular file")
+        if self.run_dir.exists():
+            if not self.run_dir.is_dir():
+                raise ValueError("solve binding run_dir must be a directory when it exists")
+            if any(self.run_dir.iterdir()):
+                raise ValueError("solve binding run_dir must be empty before execution")
 
 
 class SolveBindingFactory(Protocol):
@@ -83,12 +94,7 @@ class SolveRunReceipt:
 
 
 class SolveEngine:
-    """Minimal production orchestration boundary over AgentCTFRuntime.
-
-    This engine has no fact/proof/completion write path. `completed` in the
-    returned receipt is a projection of the Base HarnessState after the normal
-    External Oracle path.
-    """
+    """Minimal orchestration boundary over AgentCTFRuntime; no truth writes."""
 
     schema_version = 1
 
@@ -99,11 +105,7 @@ class SolveEngine:
 
     @staticmethod
     def _validate_network_policy(spec: SolveSpec) -> SecurityConfig:
-        required = NetworkPolicy(
-            challenge_transport=False,
-            general_internet=False,
-            external_retrieval=False,
-        )
+        required = NetworkPolicy(False, False, False)
         if spec.network_policy != required:
             raise ValueError(
                 "WP13 minimal SolveEngine supports only network-isolated local runs; "
@@ -125,12 +127,12 @@ class SolveEngine:
             raise ValueError("solve binding oracle policy differs from SolveSpec")
         if spec.agent.controller_revision != binding.controller.revision:
             raise ValueError("SolveSpec controller_revision differs from bound controller implementation")
+        if binding.goal.task_id != spec.challenge.challenge_id:
+            raise ValueError("solve binding goal task_id differs from SolveSpec challenge_id")
 
         workspace = binding.workspace.resolve()
-        profile_workspace = Path(binding.profile.workspace).resolve()
-        if profile_workspace != workspace:
+        if Path(binding.profile.workspace).resolve() != workspace:
             raise ValueError("solve profile workspace differs from binding workspace")
-
         if not isinstance(spec.target, LocalTargetSpec):
             raise ValueError("WP13 minimal SolveEngine currently supports local targets only")
 
@@ -143,19 +145,21 @@ class SolveEngine:
         if binding.profile.default_target_profile_id != profile_id:
             raise ValueError("bound profile default target runtime differs from SolveSpec")
 
-        expected_sha = binding.profile.expected_target_sha256.get(spec.target.artifact_ref)
+        target_relpath = Path(binding.target_relpath).as_posix()
+        expected_sha = binding.profile.expected_target_sha256.get(target_relpath)
         if expected_sha != spec.target.target_sha256:
             raise ValueError("bound profile expected target SHA-256 differs from SolveSpec")
-
         launch = runner.build_launch(
             workspace=workspace,
-            target_relpath=spec.target.artifact_ref,
+            target_relpath=target_relpath,
             expected_target_sha256=spec.target.target_sha256,
         )
         if launch.target_sha256 != spec.target.target_sha256:
             raise ValueError("prepared target launch differs from SolveSpec target identity")
 
         return {
+            "artifact_ref": spec.target.artifact_ref,
+            "target_relpath": target_relpath,
             "target_sha256": launch.target_sha256,
             "runtime_profile_id": profile_id,
             "runtime_kind": spec.target.runtime_kind.value,
@@ -171,7 +175,6 @@ class SolveEngine:
                 "token-bounded SolveSpec requires a token-enforcing production model adapter; "
                 "WP13 minimal SolveEngine fails closed instead of post-hoc accounting"
             )
-
         binding = self.binding_factory.prepare(spec)
         if not isinstance(binding, SolveRuntimeBinding):
             raise ValueError("binding_factory must return SolveRuntimeBinding")
@@ -198,11 +201,7 @@ class SolveEngine:
             task_revision=spec.challenge.challenge_revision,
         )
         state = runtime.run()
-        metrics = load_durable_runtime_metrics(
-            run_dir / "metrics.json",
-            runtime=runtime,
-            state=state,
-        )
+        metrics = load_durable_runtime_metrics(run_dir / "metrics.json", runtime=runtime, state=state)
 
         evidence_body = {
             "schema_version": self.schema_version,
@@ -243,10 +242,7 @@ class SolveEngine:
             },
         }
         evidence_sha256 = canonical_hash(evidence_body)
-        atomic_write_json(
-            run_dir / "solve_execution_evidence.json",
-            {"body": evidence_body, "body_sha256": evidence_sha256},
-        )
+        atomic_write_json(run_dir / "solve_execution_evidence.json", {"body": evidence_body, "body_sha256": evidence_sha256})
         return SolveRunReceipt(
             schema_version=1,
             kind="ctf_solve_run_receipt",
