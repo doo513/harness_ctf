@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import tempfile
 from pathlib import Path
 
@@ -15,6 +14,7 @@ from ctf_harness.proof.local_oracle import (
 )
 from ctf_harness.proof.ladder import proof_level_from_verified_keys
 from ctf_harness.proof.models import ProofLevel
+from ctf_harness.target.runners import NativeRunner
 from ctf_harness.verifiers.pwn.local import LocalExploitVerifier
 
 TARGET = """#!/bin/sh
@@ -27,7 +27,7 @@ exit 7
 """
 
 EXPLOIT = """#!/bin/sh
-printf 'ctf-local-proof-secret-513\\n' | "$1"
+printf 'ctf-local-proof-secret-513\\n' | "$@"
 """
 
 
@@ -53,10 +53,13 @@ def main() -> int:
 
         expected = hashlib.sha256(b"LOCAL_PROOF_OK_513\n").hexdigest()
         env_fp = hashlib.sha256(b"synthetic-local-pwn-environment-v1").hexdigest()
+        target_sha = hashlib.sha256(target.read_bytes()).hexdigest()
         oracle = ExecutableDigestLocalProofOracle(
             expected_stdout_sha256=expected,
             backend=backend,
             timeout_seconds=3.0,
+            target_runner=NativeRunner("native-local-proof"),
+            expected_target_sha256=target_sha,
         )
         receipt = evaluate_local_proof(
             oracle,
@@ -65,6 +68,7 @@ def main() -> int:
             exploit_path="exploit.sh",
             environment_fingerprint=env_fp,
         )
+        assert receipt.schema_version == 2
         assert receipt.accepted
         assert receipt.independence_level == "operator_fixed_digest_and_filesystem_isolation"
 
@@ -84,12 +88,15 @@ def main() -> int:
             "target_sha256": receipt.target_sha256,
             "exploit_sha256": receipt.exploit_sha256,
             "environment_fingerprint": receipt.environment_fingerprint,
+            "runtime_fingerprint": receipt.runtime_fingerprint,
+            "launch_fingerprint": receipt.launch_fingerprint,
             "oracle_id": receipt.oracle_id,
         }
         verifier = LocalExploitVerifier()
         accepted = verifier.verify(candidate, context)
         assert accepted.verified, accepted.reason
         assert not verifier.verify({**candidate, "exploit_sha256": "0" * 64}, context).verified
+        assert not verifier.verify({**candidate, "runtime_fingerprint": "0" * 64}, context).verified
 
         wrong_source = dict(context)
         wrong_source["state"] = {
@@ -103,6 +110,8 @@ def main() -> int:
             expected_stdout_sha256=hashlib.sha256(b"wrong\n").hexdigest(),
             backend=backend,
             timeout_seconds=3.0,
+            target_runner=NativeRunner("native-local-proof"),
+            expected_target_sha256=target_sha,
         )
         rejected = evaluate_local_proof(
             bad_oracle,
@@ -125,7 +134,6 @@ def main() -> int:
         }
         assert not verifier.verify(candidate, bad_context).verified
 
-        # The ladder must be contiguous: a later fact alone cannot claim P5.
         assert proof_level_from_verified_keys({"ctf.pwn.remote_behavior"}) is None
         assert proof_level_from_verified_keys({
             "ctf.pwn.arch",
@@ -142,10 +150,13 @@ def main() -> int:
             "target_sha256": receipt.target_sha256,
             "exploit_sha256": receipt.exploit_sha256,
             "environment_fingerprint": receipt.environment_fingerprint,
+            "runtime_fingerprint": receipt.runtime_fingerprint,
+            "launch_fingerprint": receipt.launch_fingerprint,
             "oracle_id": receipt.oracle_id,
             "accepted": receipt.accepted,
             "actor_source_rejected": True,
             "rejected_oracle_rejected": True,
+            "runtime_tamper_rejected": True,
             "noncontiguous_p5_blocked": True,
         }, sort_keys=True, indent=2))
     return 0
