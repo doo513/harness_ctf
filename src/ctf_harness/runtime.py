@@ -13,6 +13,7 @@ from ctf_harness.hypotheses.pool import DurableHypothesisLedger, fingerprint
 
 
 HYPOTHESIS_GUARD_SCHEMA = "ctf-hypothesis-guard-v1"
+_LEDGER_ANCHOR_EVENT = "ctf.hypothesis.ledger_anchor"
 _HYPOTHESIS_FIELDS = {
     "id",
     "category",
@@ -40,13 +41,23 @@ class VerifiedCTFRuntime(HarnessRuntime):
         self.require_hypothesis_for_tools = bool(require_hypothesis_for_tools)
         self._ctf_hypothesis_ledger_path = run_dir / "ctf_hypotheses.json"
         super().__init__(**kwargs)
+
         if self.resume_mode:
             self.ctf_hypotheses = DurableHypothesisLedger.load(self._ctf_hypothesis_ledger_path)
+            source_hash = self.ctf_hypotheses.source_body_sha256
+            if not source_hash:
+                raise IntegrityError("CTF hypothesis ledger has no source body hash")
+            self._verify_ctf_hypothesis_anchor(source_hash)
+            normalized_hash = canonical_hash(self.ctf_hypotheses.pool.dump())
+            if normalized_hash != source_hash:
+                self._save_ctf_hypotheses("resume_inflight_to_ambiguous")
         else:
             self.ctf_hypotheses = DurableHypothesisLedger(self._ctf_hypothesis_ledger_path)
-            self.ctf_hypotheses.save()
+            self._save_ctf_hypotheses("init")
+
         self.metrics.setdefault("ctf_hypothesis_attempts", 0)
         self.metrics.setdefault("ctf_hypothesis_guard_blocks", 0)
+        self.metrics.setdefault("ctf_hypothesis_refutations", 0)
 
     def _config_descriptor(self) -> dict[str, Any]:
         descriptor = super()._config_descriptor()
@@ -58,6 +69,8 @@ class VerifiedCTFRuntime(HarnessRuntime):
             ],
             "evidence_identity": "core_registered_content_digest_plus_stable_provenance",
             "ambiguous_resume_policy": "block_same_action_same_evidence",
+            "ledger_integrity": "self_hash_plus_latest_base_event_anchor",
+            "explicit_refutation": "registered_contradiction_evidence_required",
             "truth_authority": "none",
         }
         return descriptor
@@ -104,6 +117,29 @@ class VerifiedCTFRuntime(HarnessRuntime):
             "args": decision.payload.get("args", {}),
         })
 
+    def _save_ctf_hypotheses(self, reason: str) -> str:
+        body_sha256 = self.ctf_hypotheses.save()
+        self.log(_LEDGER_ANCHOR_EVENT, {
+            "schema_version": HYPOTHESIS_GUARD_SCHEMA,
+            "body_sha256": body_sha256,
+            "reason": reason,
+        })
+        return body_sha256
+
+    def _verify_ctf_hypothesis_anchor(self, source_body_sha256: str) -> None:
+        latest = None
+        for record in self.events.verify_chain():
+            if record.get("kind") == _LEDGER_ANCHOR_EVENT:
+                latest = record
+        if latest is None:
+            raise IntegrityError("CTF hypothesis ledger has no Base event-log anchor")
+        payload = latest.get("payload", {})
+        anchored = payload.get("body_sha256")
+        if anchored != source_body_sha256:
+            raise IntegrityError(
+                "CTF hypothesis ledger rollback or unanchored sidecar state detected"
+            )
+
     def _block_tool(self, *, tool: str, message: str, signature_key: str, payload: dict) -> None:
         self.metrics["ctf_hypothesis_guard_blocks"] = self.metrics.get("ctf_hypothesis_guard_blocks", 0) + 1
         self.log("ctf.hypothesis.guard_block", payload)
@@ -114,7 +150,80 @@ class VerifiedCTFRuntime(HarnessRuntime):
             signature_key=signature_key,
         ))
 
+    def _dispatch_ctf_refutation(self, decision: Decision) -> bool:
+        if decision.kind != "refute" or "ctf_hypothesis" not in decision.payload:
+            return False
+        raw_hypothesis = decision.payload.get("ctf_hypothesis")
+        try:
+            fp, hypothesis = self._parse_hypothesis(raw_hypothesis)
+        except IntegrityError as exc:
+            self.fail(Failure(
+                FailureKind.PERSISTENCE_ERROR,
+                f"CTF hypothesis refutation evidence integrity failure: {exc}",
+                action="ctf_hypothesis_refute",
+                signature_key="ctf:hypothesis:refute_evidence_integrity",
+            ))
+            return True
+        except Exception as exc:
+            self.fail(Failure(
+                FailureKind.IMPLEMENTATION_ERROR,
+                f"invalid CTF hypothesis refutation metadata: {type(exc).__name__}: {exc}",
+                action="ctf_hypothesis_refute",
+                signature_key="ctf:hypothesis:refute_metadata_contract",
+            ))
+            return True
+
+        if decision.payload.get("key") != hypothesis.id:
+            self.fail(Failure(
+                FailureKind.IMPLEMENTATION_ERROR,
+                "CTF refute.key must match ctf_hypothesis.id",
+                action="ctf_hypothesis_refute",
+                signature_key="ctf:hypothesis:refute_key_mismatch",
+            ))
+            return True
+        if not hypothesis.evidence_refs:
+            self.fail(Failure(
+                FailureKind.MISSING_INFO,
+                "CTF hypothesis refutation requires registered contradiction evidence",
+                action="ctf_hypothesis_refute",
+                signature_key="ctf:hypothesis:refute_missing_evidence",
+            ))
+            return True
+
+        existing = self.ctf_hypotheses.pool.hypotheses.get(fp)
+        if existing is None:
+            self.fail(Failure(
+                FailureKind.MISSING_INFO,
+                "cannot refute unknown CTF hypothesis",
+                action="ctf_hypothesis_refute",
+                signature_key="ctf:hypothesis:refute_unknown",
+            ))
+            return True
+
+        self.ctf_hypotheses.pool.update_evidence(
+            fp,
+            evidence_refs=hypothesis.evidence_refs,
+            evidence_state_digest=hypothesis.evidence_state_digest,
+        )
+        self.ctf_hypotheses.pool.mark_refuted(
+            fp,
+            contradiction_evidence=hypothesis.evidence_refs,
+        )
+        self.metrics["ctf_hypothesis_refutations"] = self.metrics.get("ctf_hypothesis_refutations", 0) + 1
+        self._save_ctf_hypotheses("explicit_refutation")
+        self.log("ctf.hypothesis.refuted", {
+            "hypothesis_fingerprint": fp,
+            "hypothesis_id": hypothesis.id,
+            "evidence_state_digest": hypothesis.evidence_state_digest,
+            "contradiction_evidence": list(hypothesis.evidence_refs),
+            "reason": decision.payload.get("reason", ""),
+            "truth_authority": "none",
+        })
+        return True
+
     def _dispatch_decision(self, decision) -> None:
+        if self._dispatch_ctf_refutation(decision):
+            return
         if decision.kind != "tool":
             return super()._dispatch_decision(decision)
 
@@ -159,7 +268,7 @@ class VerifiedCTFRuntime(HarnessRuntime):
                 evidence_refs=hypothesis.evidence_refs,
                 evidence_state_digest=hypothesis.evidence_state_digest,
             )
-        self.ctf_hypotheses.save()
+        self._save_ctf_hypotheses("hypothesis_upsert")
 
         action_digest = self._action_digest(decision)
         guard = self.ctf_hypotheses.pool.guard(
@@ -168,7 +277,6 @@ class VerifiedCTFRuntime(HarnessRuntime):
             evidence_state_digest=hypothesis.evidence_state_digest,
         )
         if not guard.allowed:
-            self.ctf_hypotheses.save()
             self._block_tool(
                 tool=tool,
                 message=guard.reason,
@@ -192,7 +300,7 @@ class VerifiedCTFRuntime(HarnessRuntime):
             step=self.state.step,
         )
         self.metrics["ctf_hypothesis_attempts"] = self.metrics.get("ctf_hypothesis_attempts", 0) + 1
-        self.ctf_hypotheses.save()
+        self._save_ctf_hypotheses("attempt_begin")
         self.log("ctf.hypothesis.attempt_begin", {
             "attempt_id": attempt_id,
             "hypothesis_fingerprint": fp,
@@ -210,7 +318,7 @@ class VerifiedCTFRuntime(HarnessRuntime):
             super()._dispatch_decision(sanitized)
         except Exception:
             self.ctf_hypotheses.pool.finish_ambiguous(attempt_id)
-            self.ctf_hypotheses.save()
+            self._save_ctf_hypotheses("attempt_ambiguous")
             raise
 
         new_failures = self.state.failures[before_failures:]
@@ -226,7 +334,7 @@ class VerifiedCTFRuntime(HarnessRuntime):
         else:
             self.ctf_hypotheses.pool.finish_success(attempt_id)
             outcome = "succeeded"
-        self.ctf_hypotheses.save()
+        self._save_ctf_hypotheses("attempt_end")
         self.log("ctf.hypothesis.attempt_end", {
             "attempt_id": attempt_id,
             "hypothesis_fingerprint": fp,
