@@ -63,13 +63,13 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: wp06-ctf-pytest-log
+          name: ctf-pytest-log
           path: ctf-pytest.log
           if-no-files-found: error
       - name: Enforce CTF regression
         if: steps.ctf_regression.outputs.status != '0'
         run: |
-          echo "CTF regression failed; see wp06-ctf-pytest-log artifact"
+          echo "CTF regression failed; see ctf-pytest-log artifact"
           exit 1
       - name: Live Pwn crash semantic probe
         run: sudo -E "$(command -v python)" scripts/pwn_crash_semantic_probe.py
@@ -85,3 +85,5 @@ jobs:
         run: python scripts/pwn_flag_completion_probe.py
       - name: Controlled Pwn hypothesis runtime-dedupe probe
         run: python scripts/pwn_hypothesis_dedupe_probe.py
+      - name: Controlled Pwn CTF recovery-progress integration probe
+        run: python scripts/pwn_recovery_progress_probe.py
