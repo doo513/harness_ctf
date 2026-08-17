@@ -31,12 +31,6 @@ def _lower_sha256(value: str, *, field_name: str) -> None:
 
 @dataclass(frozen=True)
 class ArmConfig:
-    """Only experimental CTF feature toggles may differ across A/B arms.
-
-    Sandbox, oracle, model/controller, budget, tool inventory and challenge
-    identity live in ExperimentContract and must remain shared.
-    """
-
     arm: BenchmarkArm
     semantic_verification: bool
     proof_gate: bool
@@ -47,13 +41,7 @@ class ArmConfig:
     def __post_init__(self) -> None:
         if not isinstance(self.arm, BenchmarkArm):
             raise ValueError("arm must be BenchmarkArm")
-        for field_name in (
-            "semantic_verification",
-            "proof_gate",
-            "hypothesis_guard",
-            "typed_recovery",
-            "task_progress",
-        ):
+        for field_name in ("semantic_verification", "proof_gate", "hypothesis_guard", "typed_recovery", "task_progress"):
             if not isinstance(getattr(self, field_name), bool):
                 raise ValueError(f"{field_name} must be boolean")
 
@@ -92,9 +80,7 @@ class ExperimentContract:
             value = getattr(self, field_name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{field_name} must be a non-empty string")
-        if not isinstance(self.tool_inventory, tuple) or any(
-            not isinstance(item, str) or not item.strip() for item in self.tool_inventory
-        ):
+        if not isinstance(self.tool_inventory, tuple) or any(not isinstance(item, str) or not item.strip() for item in self.tool_inventory):
             raise ValueError("tool_inventory must be a tuple of non-empty strings")
         if len(set(self.tool_inventory)) != len(self.tool_inventory):
             raise ValueError("tool_inventory must be unique")
@@ -151,9 +137,7 @@ class BenchmarkCase:
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{field_name} must be a non-empty string")
         _lower_sha256(self.manifest_fingerprint, field_name="manifest_fingerprint")
-        if self.difficulty is not None and (
-            not isinstance(self.difficulty, str) or not self.difficulty.strip()
-        ):
+        if self.difficulty is not None and (not isinstance(self.difficulty, str) or not self.difficulty.strip()):
             raise ValueError("difficulty must be a non-empty string when provided")
 
     def descriptor(self) -> dict[str, Any]:
@@ -187,14 +171,27 @@ class BenchmarkRunSpec:
 
 
 @dataclass(frozen=True)
+class RunExecutionEvidence:
+    """Identity chain for the mechanism that produced one RawRunOutcome."""
+
+    executor_id: str
+    executor_fingerprint: str
+    boundary_attestor_id: str
+    boundary_evidence_sha256: str
+    run_evidence_sha256: str
+
+    def __post_init__(self) -> None:
+        for field_name in ("executor_id", "boundary_attestor_id"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field_name} must be a non-empty string")
+        _lower_sha256(self.executor_fingerprint, field_name="executor_fingerprint")
+        _lower_sha256(self.boundary_evidence_sha256, field_name="boundary_evidence_sha256")
+        _lower_sha256(self.run_evidence_sha256, field_name="run_evidence_sha256")
+
+
+@dataclass(frozen=True)
 class IndependentAdjudication:
-    """Benchmark-side truth labels with an external evidence identity.
-
-    The caller must bind oracle/proof/fact judgments to a durable evidence hash.
-    This object does not itself inspect that evidence; the actual benchmark
-    executor/adjudicator introduced with a real corpus must produce the hash.
-    """
-
     adjudicator_id: str
     evidence_sha256: str
     oracle_accepted: bool
