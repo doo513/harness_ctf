@@ -29,13 +29,15 @@ jobs:
       - name: Install Pwn engineering probe tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gdb qemu-user-static
+          sudo apt-get install -y --no-install-recommends gdb qemu-user-static gcc binutils
           echo "gdb_path=$(command -v gdb)"
           dpkg-query -W -f='gdb_version=${Version}\n' gdb
           gdb --version | head -n 1
           echo "qemu_aarch64_path=$(command -v qemu-aarch64-static)"
           dpkg-query -W -f='qemu_user_static_version=${Version}\n' qemu-user-static
           qemu-aarch64-static --version | head -n 1
+          gcc --version | head -n 1
+          strings --version | head -n 1
       - name: Compile
         run: python -m compileall -q src tests scripts third_party/base_harness/src third_party/base_harness/tests third_party/base_harness/scripts
       - name: Base regression
@@ -78,6 +80,24 @@ jobs:
         run: python scripts/agent_foundation_probe.py
       - name: Live minimal SolveEngine vertical probe
         run: sudo -E "$(command -v python)" scripts/solve_engine_probe.py
+      - name: Gate A0 fails closed without production provider configuration
+        run: |
+          set +e
+          env -u CTF_MODEL_ADAPTER_CMD -u CTF_MODEL_ADAPTER_REVISION python scripts/production_model_gate.py > production-model-gate.log
+          status=$?
+          set -e
+          cat production-model-gate.log
+          test "$status" -eq 2
+          grep -q '"actual_production_llm_executed": false' production-model-gate.log
+          grep -q '"status": "OPEN"' production-model-gate.log
+      - name: Live AnalysisSandbox isolation probe
+        run: sudo -E "$(command -v python)" scripts/analysis_sandbox_probe.py
+      - name: Live Pwn operational vertical slice
+        run: sudo -E "$(command -v python)" scripts/pwn_operational_vertical_probe.py
+      - name: Controlled competition remote TCP SolveEngine probe
+        run: python scripts/competition_remote_solve_probe.py
+      - name: Controlled Crypto/Reverse cross-domain SolveEngine probe
+        run: sudo -E "$(command -v python)" scripts/cross_domain_vertical_probe.py
       - name: Live Pwn crash semantic probe
         run: sudo -E "$(command -v python)" scripts/pwn_crash_semantic_probe.py
       - name: Controlled QEMU AArch64 crash runner probe

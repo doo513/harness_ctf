@@ -65,6 +65,22 @@ class HypothesisPool:
         hypothesis.evidence_refs = list(dict.fromkeys(evidence_refs))
         hypothesis.evidence_state_digest = evidence_state_digest
 
+    def mark_supported(self, fp: str, *, support_evidence: list[str] = ()) -> bool:
+        """Mark tactical support without creating a verified fact.
+
+        Registered evidence may justify using a hypothesis for the next experiment,
+        but SUPPORTED remains speculative state and is never proof authority.
+        Returns True only when the status changed from OPEN to SUPPORTED.
+        """
+        hypothesis = self._by_fp[fp]
+        for ref in support_evidence:
+            if ref not in hypothesis.support_evidence:
+                hypothesis.support_evidence.append(ref)
+        if hypothesis.status is HypothesisStatus.OPEN:
+            hypothesis.status = HypothesisStatus.SUPPORTED
+            return True
+        return False
+
     def mark_refuted(self, fp: str, *, contradiction_evidence: list[str] = ()) -> None:
         hypothesis = self._by_fp[fp]
         hypothesis.status = HypothesisStatus.REFUTED

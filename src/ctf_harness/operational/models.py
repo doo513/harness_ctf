@@ -72,6 +72,24 @@ def _validate_tcp_endpoint(endpoint: str) -> str:
     return normalized
 
 
+def _validate_http_endpoint(endpoint: str) -> str:
+    normalized = _reject_endpoint_userinfo(endpoint, field_name="endpoint")
+    parsed = urlsplit(normalized)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("HTTP target endpoint must use http:// or https:// scheme")
+    if not parsed.hostname:
+        raise ValueError("HTTP target endpoint host is missing")
+    if parsed.fragment:
+        raise ValueError("HTTP target endpoint must not contain fragment")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("HTTP target endpoint port is invalid") from exc
+    if port is not None and not (1 <= port <= 65535):
+        raise ValueError("HTTP target endpoint port must be in 1..65535")
+    return normalized
+
+
 @dataclass(frozen=True, init=False)
 class OperationalChallengeRef:
     """Immutable operational snapshot derived only from ChallengeManifest."""
@@ -234,6 +252,7 @@ class LocalTargetSpec:
 
 class RemoteTransport(str, Enum):
     TCP = "tcp"
+    HTTP = "http"
 
 
 @dataclass(frozen=True)
@@ -247,6 +266,8 @@ class RemoteTargetSpec:
             raise ValueError("transport must be RemoteTransport")
         if self.transport is RemoteTransport.TCP:
             _validate_tcp_endpoint(self.endpoint)
+        elif self.transport is RemoteTransport.HTTP:
+            _validate_http_endpoint(self.endpoint)
         else:
             _reject_endpoint_userinfo(self.endpoint, field_name="endpoint")
         if self.credential_ref is not None and not isinstance(self.credential_ref, CredentialRef):

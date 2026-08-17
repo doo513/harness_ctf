@@ -102,6 +102,7 @@ class BindingFactory:
             controller=CTFLLMController(self.model),
             workspace=self.root / "workspace",
             run_dir=self.root / "run",
+            target_relpath="chal",
             agent=spec.agent,
             oracle_policy_id=spec.oracle_policy.policy_id,
         )
