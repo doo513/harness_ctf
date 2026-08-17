@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import uuid
 from dataclasses import dataclass
@@ -181,19 +180,35 @@ class HypothesisPool:
 
 
 class DurableHypothesisLedger:
-    """Integrity-wrapped, atomically replaced speculative sidecar."""
+    """Integrity-wrapped, atomically replaced speculative sidecar.
 
-    def __init__(self, path: str | Path, pool: HypothesisPool | None = None):
+    `source_body_sha256` records the exact valid envelope body that was loaded.
+    Runtime code can bind that source hash to the Base hash-chained event log
+    before persisting any INFLIGHT->AMBIGUOUS normalization. This blocks rollback
+    to an older but otherwise valid ledger envelope.
+    """
+
+    def __init__(
+        self,
+        path: str | Path,
+        pool: HypothesisPool | None = None,
+        *,
+        source_body_sha256: str | None = None,
+    ):
         self.path = Path(path)
         self.pool = pool or HypothesisPool()
+        self.source_body_sha256 = source_body_sha256
 
-    def save(self) -> None:
+    def save(self) -> str:
         body = self.pool.dump()
+        body_sha256 = canonical_hash(body)
         envelope = {
             "body": body,
-            "body_sha256": canonical_hash(body),
+            "body_sha256": body_sha256,
         }
         atomic_write_json(self.path, envelope)
+        self.source_body_sha256 = body_sha256
+        return body_sha256
 
     @classmethod
     def load(cls, path: str | Path) -> "DurableHypothesisLedger":
@@ -206,9 +221,14 @@ class DurableHypothesisLedger:
             raise IntegrityError(f"cannot read CTF hypothesis ledger: {exc}") from exc
         if not isinstance(raw, dict) or set(raw) != {"body", "body_sha256"}:
             raise IntegrityError("malformed CTF hypothesis ledger envelope")
-        if canonical_hash(raw["body"]) != raw["body_sha256"]:
+        source_body_sha256 = raw.get("body_sha256")
+        if not isinstance(source_body_sha256, str) or canonical_hash(raw["body"]) != source_body_sha256:
             raise IntegrityError("CTF hypothesis ledger integrity mismatch")
-        ledger = cls(path, HypothesisPool.from_dict(raw["body"]))
-        # Persist conversion of crash-left INFLIGHT records to AMBIGUOUS.
-        ledger.save()
-        return ledger
+        # HypothesisPool.from_dict converts crash-left INFLIGHT records to
+        # AMBIGUOUS in memory. The caller must first verify source_body_sha256
+        # against the Base event-log anchor, then persist the normalized state.
+        return cls(
+            path,
+            HypothesisPool.from_dict(raw["body"]),
+            source_body_sha256=source_body_sha256,
+        )
