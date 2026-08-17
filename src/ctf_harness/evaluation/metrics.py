@@ -23,6 +23,8 @@ class BenchmarkRunRecord:
     mode: EvaluationMode
     arm: BenchmarkArm
     repeat_index: int
+    adjudicator_id: str
+    adjudication_evidence_sha256: str
     oracle_accepted: bool
     completed_claimed: bool
     highest_proof_level: int | None
@@ -65,6 +67,8 @@ def build_run_record(
         mode=spec.experiment.mode,
         arm=spec.arm.arm,
         repeat_index=spec.repeat_index,
+        adjudicator_id=adjudication.adjudicator_id.strip(),
+        adjudication_evidence_sha256=adjudication.evidence_sha256,
         oracle_accepted=adjudication.oracle_accepted,
         completed_claimed=outcome.completed_claimed,
         highest_proof_level=(
