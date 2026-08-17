@@ -32,10 +32,10 @@ def _meta(*, evidence_refs=None, hypothesis_id="h-overflow"):
     }
 
 
-def _decision(*, evidence_refs=None):
+def _decision(*, evidence_refs=None, action="same-action"):
     return Decision("tool", {
         "tool": "argv",
-        "args": {"argv": ["probe", "same-action"]},
+        "args": {"argv": ["probe", action]},
         "ctf_hypothesis": _meta(evidence_refs=evidence_refs),
     })
 
@@ -43,6 +43,7 @@ def _decision(*, evidence_refs=None):
 def _runtime(tmp_path, backend=None, *, run_name="run"):
     backend = backend or RecordingIsolatedTestBackend({
         ("probe", "same-action"): ExecutionResult(1, "", "deterministic failure"),
+        ("probe", "adapted-action"): ExecutionResult(1, "", "adapted deterministic failure"),
     })
     workspace = tmp_path / f"workspace-{run_name}"
     workspace.mkdir()
@@ -95,15 +96,29 @@ def test_runtime_blocks_same_failed_action_before_second_backend_call(tmp_path):
     assert runtime.state.failures[-1]["kind"] == "no_progress"
 
 
-def test_registered_content_provenance_novel_evidence_reopens_attempt(tmp_path):
+def test_novel_evidence_reopens_guard_but_does_not_bypass_core_exact_receipt_dedupe(tmp_path):
     runtime, backend = _runtime(tmp_path)
     runtime._dispatch_decision(_decision())
     assert len(backend.calls) == 1
 
     ref = _register_evidence(runtime, name="recon-new.json", payload={"offset_candidate": 72})
+    blocks_before = runtime.metrics["ctf_hypothesis_guard_blocks"]
+    attempts_before = runtime.metrics["ctf_hypothesis_attempts"]
+    receipt_dedup_before = runtime.metrics["receipt_deduplications"]
     runtime._dispatch_decision(_decision(evidence_refs=[ref]))
+
+    # The CTF guard reopened the attempt because evidence changed, but the exact
+    # tool+args execution identity is still governed by the stronger Base receipt
+    # dedupe. WP06 must never bypass that Core side-effect/idempotency boundary.
+    assert runtime.metrics["ctf_hypothesis_guard_blocks"] == blocks_before
+    assert runtime.metrics["ctf_hypothesis_attempts"] == attempts_before + 1
+    assert runtime.metrics["receipt_deduplications"] == receipt_dedup_before + 1
+    assert len(backend.calls) == 1
+
+    # A materially adapted action is a distinct Core execution identity and is
+    # therefore allowed to execute under the new evidence state.
+    runtime._dispatch_decision(_decision(evidence_refs=[ref], action="adapted-action"))
     assert len(backend.calls) == 2
-    assert runtime.metrics["ctf_hypothesis_attempts"] == 2
 
 
 def test_same_content_same_source_under_new_artifact_name_does_not_reopen(tmp_path):
