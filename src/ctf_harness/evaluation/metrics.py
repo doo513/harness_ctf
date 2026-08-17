@@ -61,8 +61,15 @@ def build_run_record(
     adjudication: IndependentAdjudication,
     execution_evidence: RunExecutionEvidence,
 ) -> BenchmarkRunRecord:
+    if not isinstance(adjudication, IndependentAdjudication):
+        raise ValueError("adjudication must be IndependentAdjudication")
     if not isinstance(execution_evidence, RunExecutionEvidence):
         raise ValueError("execution_evidence must be RunExecutionEvidence")
+    if adjudication.run_id != spec.run_id():
+        raise ValueError("independent adjudication is bound to a different benchmark run")
+    if adjudication.run_evidence_sha256 != execution_evidence.run_evidence_sha256:
+        raise ValueError("independent adjudication is bound to different run evidence")
+
     invalid = set(adjudication.invalid_verified_fact_keys)
     reported = set(outcome.verified_fact_keys)
     if not invalid.issubset(reported):
