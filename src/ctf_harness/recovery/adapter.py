@@ -37,49 +37,22 @@ class RecoveryMapping:
 
 
 _MAP: dict[CTFFailureKind, RecoveryMapping] = {
-    CTFFailureKind.RECON_INCOMPLETE: RecoveryMapping(
-        FailureKind.MISSING_INFO, "targeted_recon"
-    ),
+    CTFFailureKind.RECON_INCOMPLETE: RecoveryMapping(FailureKind.MISSING_INFO, "targeted_recon"),
     # CTF category assessments and sidecar hypotheses are not Core logical
-    # hypotheses. Mapping them to Core HYPOTHESIS_REFUTED would make ROLLBACK
-    # interpret the route label as a Core hypothesis key. Use Base REPLAN
-    # semantics instead and let the CTF target describe the strategy change.
-    CTFFailureKind.CATEGORY_MISCLASSIFIED: RecoveryMapping(
-        FailureKind.NO_PROGRESS, "category_switch"
-    ),
-    CTFFailureKind.TOOL_MISSING: RecoveryMapping(
-        FailureKind.ENV_ERROR, "install_or_substitute_tool"
-    ),
-    CTFFailureKind.TOOL_FAILURE: RecoveryMapping(
-        FailureKind.TOOL_ERROR, "repair_or_substitute"
-    ),
-    CTFFailureKind.INTERACTIVE_STALL: RecoveryMapping(
-        FailureKind.NO_PROGRESS, "restart_or_switch_session"
-    ),
-    CTFFailureKind.HYPOTHESIS_REFUTED: RecoveryMapping(
-        FailureKind.NO_PROGRESS, "close_branch"
-    ),
-    CTFFailureKind.PRIMITIVE_NOT_REPRODUCIBLE: RecoveryMapping(
-        FailureKind.VERIFICATION_FAILED, "alternate_primitive"
-    ),
-    CTFFailureKind.LOCAL_PROOF_FAILED: RecoveryMapping(
-        FailureKind.VERIFICATION_FAILED, "proof_strategy_switch"
-    ),
-    CTFFailureKind.ENVIRONMENT_MISMATCH: RecoveryMapping(
-        FailureKind.ENV_ERROR, "environment_adaptation"
-    ),
-    CTFFailureKind.REMOTE_PROOF_FAILED: RecoveryMapping(
-        FailureKind.VERIFICATION_FAILED, "inspect_environment_diff"
-    ),
-    CTFFailureKind.FLAG_REJECTED: RecoveryMapping(
-        FailureKind.VERIFICATION_FAILED, "return_to_proof"
-    ),
-    CTFFailureKind.NO_INFORMATION_GAIN: RecoveryMapping(
-        FailureKind.NO_PROGRESS, "strategy_switch"
-    ),
-    CTFFailureKind.BUDGET_EXHAUSTED: RecoveryMapping(
-        FailureKind.BUDGET_EXCEEDED, "checkpoint_stop"
-    ),
+    # hypotheses. Core HYPOTHESIS_REFUTED would make ROLLBACK interpret the
+    # recovery label as a Core hypothesis key, so these use Base REPLAN.
+    CTFFailureKind.CATEGORY_MISCLASSIFIED: RecoveryMapping(FailureKind.NO_PROGRESS, "category_switch"),
+    CTFFailureKind.TOOL_MISSING: RecoveryMapping(FailureKind.ENV_ERROR, "install_or_substitute_tool"),
+    CTFFailureKind.TOOL_FAILURE: RecoveryMapping(FailureKind.TOOL_ERROR, "repair_or_substitute"),
+    CTFFailureKind.INTERACTIVE_STALL: RecoveryMapping(FailureKind.NO_PROGRESS, "restart_or_switch_session"),
+    CTFFailureKind.HYPOTHESIS_REFUTED: RecoveryMapping(FailureKind.NO_PROGRESS, "close_branch"),
+    CTFFailureKind.PRIMITIVE_NOT_REPRODUCIBLE: RecoveryMapping(FailureKind.VERIFICATION_FAILED, "alternate_primitive"),
+    CTFFailureKind.LOCAL_PROOF_FAILED: RecoveryMapping(FailureKind.VERIFICATION_FAILED, "proof_strategy_switch"),
+    CTFFailureKind.ENVIRONMENT_MISMATCH: RecoveryMapping(FailureKind.ENV_ERROR, "environment_adaptation"),
+    CTFFailureKind.REMOTE_PROOF_FAILED: RecoveryMapping(FailureKind.VERIFICATION_FAILED, "inspect_environment_diff"),
+    CTFFailureKind.FLAG_REJECTED: RecoveryMapping(FailureKind.VERIFICATION_FAILED, "return_to_proof"),
+    CTFFailureKind.NO_INFORMATION_GAIN: RecoveryMapping(FailureKind.NO_PROGRESS, "strategy_switch"),
+    CTFFailureKind.BUDGET_EXHAUSTED: RecoveryMapping(FailureKind.BUDGET_EXCEEDED, "checkpoint_stop"),
 }
 
 
@@ -118,8 +91,10 @@ def to_core_failure(
         raise ValueError("CTF failure message must be a non-empty string")
     if subject is not None and (not isinstance(subject, str) or not subject.strip()):
         raise ValueError("CTF failure subject must be a non-empty string when provided")
+    if retry_safe is not None and not isinstance(retry_safe, bool):
+        raise ValueError("CTF failure retry_safe must be a boolean when provided")
 
-    safe = mapping.retry_safe_default if retry_safe is None else bool(retry_safe)
+    safe = mapping.retry_safe_default if retry_safe is None else retry_safe
     normalized_subject = subject.strip() if isinstance(subject, str) else ""
     core = Failure(
         mapping.core_failure,
