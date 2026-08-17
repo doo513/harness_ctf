@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import hashlib
-import json
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 from harness.core.budget import Budget
 from harness.core.storage import atomic_write_json, canonical_hash
+
+from ctf_harness.durable_runtime import file_sha256, load_durable_runtime_metrics
 
 from .arm_runtime import build_runtime_for_arm, canonical_arm_selection
 from .executor import BenchmarkExecutorDescriptor, ExecutorRunReceipt
@@ -57,62 +56,6 @@ class RuntimeUsageProvider(Protocol):
     def read_usage(self, spec: BenchmarkRunSpec, runtime) -> UsageSnapshot: ...
 
 
-def _file_sha256(path: Path) -> str | None:
-    if not path.exists() or not path.is_file():
-        return None
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _load_durable_metrics(path: Path, *, runtime, state) -> dict:
-    """Load the Base-produced metrics.json and bind it back to the returned state.
-
-    Base computes wall_seconds only in the persisted metrics snapshot; the mutable
-    runtime.metrics dictionary is not the authoritative wall-time source.
-    """
-    if not path.exists() or not path.is_file():
-        raise ValueError("runtime did not persist metrics.json")
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("runtime metrics.json is unreadable or invalid JSON") from exc
-    if not isinstance(raw, dict):
-        raise ValueError("runtime metrics.json must contain an object")
-
-    required = ("run_id", "steps", "tool_calls", "completed", "wall_seconds")
-    missing = [key for key in required if key not in raw]
-    if missing:
-        raise ValueError("runtime metrics.json missing required fields: " + ", ".join(missing))
-
-    if raw["run_id"] != getattr(runtime, "run_id", None):
-        raise ValueError("runtime metrics.json is bound to a different Base runtime run_id")
-    if not isinstance(raw["steps"], int) or isinstance(raw["steps"], bool) or raw["steps"] < 0:
-        raise ValueError("runtime metrics steps must be a non-negative integer")
-    if not isinstance(raw["tool_calls"], int) or isinstance(raw["tool_calls"], bool) or raw["tool_calls"] < 0:
-        raise ValueError("runtime metrics tool_calls must be a non-negative integer")
-    if not isinstance(raw["completed"], bool):
-        raise ValueError("runtime metrics completed must be boolean")
-    if (
-        not isinstance(raw["wall_seconds"], (int, float))
-        or isinstance(raw["wall_seconds"], bool)
-        or not math.isfinite(float(raw["wall_seconds"]))
-        or float(raw["wall_seconds"]) < 0
-    ):
-        raise ValueError("runtime metrics wall_seconds must be finite and non-negative")
-
-    if raw["steps"] != int(state.step):
-        raise ValueError("runtime metrics steps disagree with returned HarnessState")
-    if raw["completed"] is not bool(state.completed):
-        raise ValueError("runtime metrics completed disagrees with returned HarnessState")
-    return raw
-
-
 class RuntimeBenchmarkExecutor:
     """BenchmarkRunExecutor backed by the actual Base/Verified CTF runtime paths."""
 
@@ -146,9 +89,6 @@ class RuntimeBenchmarkExecutor:
             raise ValueError("binding_factory must return RuntimeBinding")
         binding.run_dir.mkdir(parents=True, exist_ok=True)
 
-        # Base 0.9.1 owns runtime termination through hard_max_steps / hard_wall_seconds.
-        # The evaluation contract keeps the public max_steps/max_wall_seconds vocabulary,
-        # but the adapter must translate it rather than invent Base constructor fields.
         budget = Budget(
             hard_max_steps=spec.experiment.max_steps,
             hard_wall_seconds=float(spec.experiment.max_wall_seconds),
@@ -163,7 +103,7 @@ class RuntimeBenchmarkExecutor:
             budget=budget,
         )
         state = runtime.run()
-        durable_metrics = _load_durable_metrics(
+        durable_metrics = load_durable_runtime_metrics(
             binding.run_dir / "metrics.json",
             runtime=runtime,
             state=state,
@@ -204,9 +144,9 @@ class RuntimeBenchmarkExecutor:
             "runtime_class": f"{type(runtime).__module__}.{type(runtime).__qualname__}",
             "executor_fingerprint": self._descriptor.fingerprint(),
             "state_sha256": canonical_hash(state.snapshot()),
-            "metrics_sha256": _file_sha256(binding.run_dir / "metrics.json"),
-            "events_sha256": _file_sha256(binding.run_dir / "events.jsonl"),
-            "tool_calls_sha256": _file_sha256(binding.run_dir / "tool_calls.jsonl"),
+            "metrics_sha256": file_sha256(binding.run_dir / "metrics.json"),
+            "events_sha256": file_sha256(binding.run_dir / "events.jsonl"),
+            "tool_calls_sha256": file_sha256(binding.run_dir / "tool_calls.jsonl"),
             "outcome": {
                 "completed_claimed": outcome.completed_claimed,
                 "verified_fact_keys": list(outcome.verified_fact_keys),
