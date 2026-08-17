@@ -174,6 +174,10 @@ class VerifiedCTFProfile(CTFProfile):
         return super().completion_oracle()
 
     def task_progress_snapshot(self, *, goal, state):
+        # Only Pwn currently has a claim-specific semantic progress module. Do
+        # not project Pwn milestones into Crypto/Web/Reverse/Forensics/Misc runs.
+        if "pwn" not in self.active_domains:
+            return None
         facts = getattr(state, "facts", {})
         keys = facts.keys() if hasattr(facts, "keys") else (getattr(item, "key", "") for item in facts)
         return self.semantic_modules.require("pwn").progress_snapshot(
