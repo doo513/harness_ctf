@@ -126,8 +126,6 @@ def _prepare_files(root: Path) -> tuple[Path, Path]:
     workspace = root / "workspace"
     workspace.mkdir(parents=True)
     target = workspace / "chal"
-    # Bytes deliberately chosen to match the fixture SHA only through the profile
-    # binding helper below, where tests may override the expected identity.
     target.write_bytes(b"controlled-target")
     target.chmod(0o755)
     return workspace, target
@@ -210,6 +208,7 @@ class Factory:
             controller=CTFLLMController(self.model),
             workspace=self.root / "workspace",
             run_dir=self.root / "run",
+            target_relpath="chal",
             agent=self.agent,
             oracle_policy_id=self.oracle_policy_id,
         )
@@ -351,6 +350,7 @@ def test_solve_runtime_binding_rejects_nonempty_run_dir(tmp_path: Path) -> None:
             controller=CTFLLMController(SequenceModel([_complete()])),
             workspace=tmp_path / "workspace",
             run_dir=run_dir,
+            target_relpath="chal",
             agent=spec.agent,
             oracle_policy_id="fixture-oracle",
         )
