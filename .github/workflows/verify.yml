@@ -89,3 +89,7 @@ jobs:
         run: python scripts/pwn_recovery_progress_probe.py
       - name: Controlled benchmark integrity probe
         run: python scripts/evaluation_integrity_probe.py
+      - name: Controlled corpus ingestion integrity probe
+        run: python scripts/evaluation_ingest_probe.py
+      - name: Controlled benchmark executor boundary probe
+        run: python scripts/evaluation_executor_boundary_probe.py
