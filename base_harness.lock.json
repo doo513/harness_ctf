@@ -1,7 +1,7 @@
 {
   "repository": "doo513/base_harness",
   "branch": "ctf/structured-session-runtime",
-  "commit": "20079ffd90cc063958f084da8286e05f38ccdef0",
+  "commit": "75834ac1ecb6c022771c2efee1f19495f356ee76",
   "package": "verified-state-harness",
   "version": "0.9.1"
 }
