@@ -36,7 +36,11 @@ def main() -> int:
         target = workspace / "control"
         asm.write_text(ASM, encoding="utf-8")
         subprocess.run(["/usr/bin/gcc", "-nostdlib", "-no-pie", "-Wl,--build-id=none", "-o", str(target), str(asm)], check=True)
-        marker = 0x4141414141414141
+
+        # Canonical lower-half, intentionally unmapped x86_64 address.  A
+        # non-canonical 0x4141414141414141 faults at RET before RIP is loaded,
+        # which cannot demonstrate instruction-pointer control.
+        marker = 0x0000414141414141
         data = marker.to_bytes(8, "little") + b"B" * 24
         input_b64 = base64.b64encode(data).decode("ascii")
         target_sha = hashlib.sha256(target.read_bytes()).hexdigest()
@@ -89,8 +93,9 @@ def main() -> int:
         verifier = ControlFlowVerifier()
         accepted = verifier.verify(candidate, context)
         assert accepted.verified, accepted.reason
-        assert not verifier.verify({**candidate, "value":0x4242424242424242}, context).verified
-        one = dict(context); one["claim_evidence_refs"] = [refs[0]]
+        assert not verifier.verify({**candidate, "value":0x0000424242424242}, context).verified
+        one = dict(context)
+        one["claim_evidence_refs"] = [refs[0]]
         assert not verifier.verify(candidate, one).verified
         print(json.dumps({
             "probe":"pwn-control-flow-live",
