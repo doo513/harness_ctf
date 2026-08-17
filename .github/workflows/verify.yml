@@ -27,19 +27,21 @@ jobs:
           python -m pip install -e .
           python -m pip check
       - name: Compile
-        run: python -m compileall -q src tests scripts
+        run: python -m compileall -q src tests scripts third_party/base_harness/src third_party/base_harness/tests third_party/base_harness/scripts
       - name: Base regression
-        run: pytest -q third_party/base_harness/tests
+        working-directory: third_party/base_harness
+        run: pytest -q
       - name: Base invariant probes
+        working-directory: third_party/base_harness
         run: |
-          python third_party/base_harness/scripts/core_freeze_audit_probe.py
-          python third_party/base_harness/scripts/stage2_tool_backend_binding_probe.py
-          sudo -E "$(command -v python)" third_party/base_harness/scripts/stage2_session_namespace_probe.py
-          python third_party/base_harness/scripts/stage4_semantic_probe.py
-          python third_party/base_harness/scripts/stage5_recovery_effectiveness_benchmark.py
-          python third_party/base_harness/scripts/stage6_task_world_progress_probe.py
-          python third_party/base_harness/scripts/stage7_context_probe.py
-          python third_party/base_harness/scripts/stage8_retrieval_probe.py
+          python scripts/core_freeze_audit_probe.py
+          python scripts/stage2_tool_backend_binding_probe.py
+          sudo -E "$(command -v python)" scripts/stage2_session_namespace_probe.py
+          python scripts/stage4_semantic_probe.py
+          python scripts/stage5_recovery_effectiveness_benchmark.py
+          python scripts/stage6_task_world_progress_probe.py
+          python scripts/stage7_context_probe.py
+          python scripts/stage8_retrieval_probe.py
       - name: CTF regression
         run: pytest -q
       - name: Live Pwn crash semantic probe
