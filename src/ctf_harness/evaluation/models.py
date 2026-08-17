@@ -35,6 +35,19 @@ class ArmConfig:
     typed_recovery: bool
     task_progress: bool
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.arm, BenchmarkArm):
+            raise ValueError("arm must be BenchmarkArm")
+        for field_name in (
+            "semantic_verification",
+            "proof_gate",
+            "hypothesis_guard",
+            "typed_recovery",
+            "task_progress",
+        ):
+            if not isinstance(getattr(self, field_name), bool):
+                raise ValueError(f"{field_name} must be boolean")
+
     @classmethod
     def minimal(cls) -> "ArmConfig":
         return cls(
@@ -78,6 +91,8 @@ class ExperimentContract:
     seed: int | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.mode, EvaluationMode):
+            raise ValueError("mode must be EvaluationMode")
         for field_name in (
             "model_id",
             "model_revision",
@@ -137,10 +152,13 @@ class BenchmarkCase:
     challenge_id: str
     challenge_revision: str
     manifest_fingerprint: str
+    mode: EvaluationMode
     category: str
     difficulty: str | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.mode, EvaluationMode):
+            raise ValueError("case mode must be EvaluationMode")
         for field_name in ("case_id", "challenge_id", "challenge_revision", "category"):
             value = getattr(self, field_name)
             if not isinstance(value, str) or not value.strip():
@@ -157,7 +175,9 @@ class BenchmarkCase:
             raise ValueError("difficulty must be a non-empty string when provided")
 
     def descriptor(self) -> dict[str, Any]:
-        return asdict(self)
+        body = asdict(self)
+        body["mode"] = self.mode.value
+        return body
 
 
 @dataclass(frozen=True)
@@ -168,6 +188,8 @@ class BenchmarkRunSpec:
     repeat_index: int = 0
 
     def __post_init__(self) -> None:
+        if self.case.mode is not self.experiment.mode:
+            raise ValueError("case mode and experiment mode must match")
         if not isinstance(self.repeat_index, int) or isinstance(self.repeat_index, bool) or self.repeat_index < 0:
             raise ValueError("repeat_index must be a non-negative integer")
 
