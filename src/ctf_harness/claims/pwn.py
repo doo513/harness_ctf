@@ -17,6 +17,7 @@ PWN_CLAIM_SPECS = (
     ClaimSpec("ctf.pwn.crash_reproducible", "EXECUTION", "pwn_crash_reproducible"),
     ClaimSpec("ctf.pwn.control_flow", "EXECUTION", "pwn_control_flow_x86_64"),
     ClaimSpec("ctf.pwn.local_exploit", "EXECUTION", "pwn_local_exploit"),
+    ClaimSpec("ctf.environment.compatible", "LOGICAL", "pwn_environment_compatible"),
 )
 
 

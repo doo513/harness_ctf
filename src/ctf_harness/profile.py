@@ -11,6 +11,7 @@ from ctf_harness.verifiers.pwn.core import static_pwn_verifiers
 from ctf_harness.verifiers.pwn.crash import CrashReproducibleVerifier
 from ctf_harness.verifiers.pwn.control import ControlFlowVerifier
 from ctf_harness.verifiers.pwn.local import LocalExploitVerifier
+from ctf_harness.verifiers.pwn.environment import EnvironmentCompatibilityVerifier
 
 _LEVEL = {name: getattr(VerificationLevel, name) for name in ("LOGICAL", "EXECUTION", "EXTERNAL_ORACLE")}
 
@@ -43,6 +44,7 @@ class VerifiedCTFProfile(CTFProfile):
             CrashReproducibleVerifier(),
             ControlFlowVerifier(),
             LocalExploitVerifier(),
+            EnvironmentCompatibilityVerifier(),
         ]
 
     def claim_verification_registry(self):
