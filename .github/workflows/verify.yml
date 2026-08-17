@@ -27,7 +27,7 @@ jobs:
           python -m pip install -e .
           python -m pip check
       - name: Compile
-        run: python -m compileall -q src tests
+        run: python -m compileall -q src tests scripts
       - name: Base regression
         run: pytest -q third_party/base_harness/tests
       - name: Base invariant probes
@@ -42,3 +42,5 @@ jobs:
           python third_party/base_harness/scripts/stage8_retrieval_probe.py
       - name: CTF regression
         run: pytest -q
+      - name: Live Pwn crash semantic probe
+        run: sudo -E "$(command -v python)" scripts/pwn_crash_semantic_probe.py
