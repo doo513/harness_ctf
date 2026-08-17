@@ -52,7 +52,12 @@ def main() -> int:
             network_policy=NetworkPolicy.DENY,
         )
         results = [runtime.execute(ToolCall("pwn_control_probe", {"argv": ["control", input_b64]})) for _ in range(2)]
-        assert all(r.ok for r in results), [r.error for r in results]
+        diagnostics = [
+            {"ok": r.ok, "error": r.error, "output": r.output, "isolation": r.isolation}
+            for r in results
+        ]
+        if not all(r.ok for r in results):
+            raise AssertionError(json.dumps(diagnostics, sort_keys=True, indent=2))
 
         store = ArtifactStore(root / "artifacts")
         refs = []
