@@ -32,8 +32,12 @@ class CorpusLock:
             raise ValueError("corpus revision is required")
         if not isinstance(self.unpublished, bool):
             raise ValueError("unpublished must be boolean")
+        if not isinstance(self.cases, tuple):
+            raise ValueError("corpus cases must be an immutable tuple")
         if not self.cases:
             raise ValueError("corpus must contain at least one case")
+        if any(not isinstance(case, BenchmarkCase) for case in self.cases):
+            raise ValueError("corpus cases must contain BenchmarkCase values")
         if any(case.mode is not self.mode for case in self.cases):
             raise ValueError("every benchmark case mode must match the corpus mode")
         case_ids = [case.case_id for case in self.cases]
@@ -51,10 +55,7 @@ class CorpusLock:
             "revision": self.revision,
             "mode": self.mode.value,
             "unpublished": self.unpublished,
-            "cases": [
-                case.descriptor()
-                for case in sorted(self.cases, key=lambda item: item.case_id)
-            ],
+            "cases": [case.descriptor() for case in sorted(self.cases, key=lambda item: item.case_id)],
         }
 
     def fingerprint(self) -> str:
