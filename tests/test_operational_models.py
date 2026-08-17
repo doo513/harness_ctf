@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
-
 import pytest
 
 from ctf_harness.manifest.fingerprint import manifest_fingerprint
@@ -109,6 +107,20 @@ def test_operational_challenge_ref_is_derived_from_manifest_identity() -> None:
     assert challenge.manifest_fingerprint == manifest_fingerprint(manifest, HASHES)
     assert challenge.artifact_hashes == (("chal", CHAL_SHA), ("libc.so.6", LIBC_SHA))
     assert challenge.artifact_sha256("chal") == CHAL_SHA
+
+
+def test_operational_challenge_ref_cannot_be_forged_through_public_constructor() -> None:
+    with pytest.raises(TypeError):
+        OperationalChallengeRef(
+            challenge_id="forged",
+            challenge_revision="r1",
+            manifest_fingerprint="0" * 64,
+            artifact_hashes=(("chal", CHAL_SHA),),
+            remote_endpoints=(),
+            allowed_network=True,
+            oracle_type="external",
+            benchmark_policy="research",
+        )
 
 
 def test_operational_challenge_ref_rejects_non_manifest_artifact_set() -> None:
@@ -220,10 +232,6 @@ def test_remote_target_credential_is_reference_only() -> None:
 def test_initial_oracle_authority_cannot_be_weakened() -> None:
     with pytest.raises(ValueError, match="requires external oracle"):
         OraclePolicy("manual-only", oracle_type="manual")
-
-    bad_challenge = replace(_challenge(), oracle_type="other")
-    with pytest.raises(ValueError, match="oracle authority differs"):
-        _local_solve(challenge=bad_challenge)
 
 
 def test_solve_budget_is_strict_and_finite() -> None:
