@@ -135,3 +135,76 @@ def aggregate(records: Iterable[BenchmarkRunRecord]) -> AggregateMetrics:
         total_output_tokens=(sum(int(row.output_tokens) for row in rows) if output_known else None),
         total_cost_usd=(sum(float(row.cost_usd) for row in rows) if cost_known else None),
     )
+
+
+@dataclass(frozen=True)
+class PairedABMetrics:
+    mode: EvaluationMode
+    pair_count: int
+    minimal_success_rate: float
+    verified_success_rate: float
+    verified_minus_minimal_success_rate: float
+    verified_minus_minimal_mean_tool_calls: float
+    verified_minus_minimal_mean_steps: float
+    verified_minus_minimal_mean_wall_seconds: float
+    verified_minus_minimal_repeated_failures: int
+    verified_minus_minimal_false_completions: int
+    verified_minus_minimal_false_facts: int
+
+
+def compare_paired_ab(records: Iterable[BenchmarkRunRecord]) -> PairedABMetrics:
+    rows = tuple(records)
+    if not rows:
+        raise ValueError("cannot compare an empty benchmark result set")
+    modes = {row.mode for row in rows}
+    if len(modes) != 1:
+        raise ValueError("research and competition results must not be compared together")
+
+    grouped: dict[str, list[BenchmarkRunRecord]] = {}
+    seen_run_ids: set[str] = set()
+    for row in rows:
+        if row.run_id in seen_run_ids:
+            raise ValueError("duplicate benchmark run_id in paired comparison")
+        seen_run_ids.add(row.run_id)
+        grouped.setdefault(row.comparison_key, []).append(row)
+
+    minimal_rows: list[BenchmarkRunRecord] = []
+    verified_rows: list[BenchmarkRunRecord] = []
+    for key, pair in grouped.items():
+        if len(pair) != 2:
+            raise ValueError(f"comparison key {key} does not contain exactly two records")
+        by_arm = {row.arm: row for row in pair}
+        if set(by_arm) != {BenchmarkArm.MINIMAL, BenchmarkArm.VERIFIED}:
+            raise ValueError("paired comparison requires exactly one minimal and one verified record")
+        minimal = by_arm[BenchmarkArm.MINIMAL]
+        verified = by_arm[BenchmarkArm.VERIFIED]
+        if (
+            minimal.case_id != verified.case_id
+            or minimal.manifest_fingerprint != verified.manifest_fingerprint
+            or minimal.repeat_index != verified.repeat_index
+        ):
+            raise ValueError("paired records disagree on frozen case identity")
+        minimal_rows.append(minimal)
+        verified_rows.append(verified)
+
+    minimal_agg = aggregate(minimal_rows)
+    verified_agg = aggregate(verified_rows)
+    return PairedABMetrics(
+        mode=next(iter(modes)),
+        pair_count=len(grouped),
+        minimal_success_rate=minimal_agg.success_rate,
+        verified_success_rate=verified_agg.success_rate,
+        verified_minus_minimal_success_rate=verified_agg.success_rate - minimal_agg.success_rate,
+        verified_minus_minimal_mean_tool_calls=verified_agg.mean_tool_calls - minimal_agg.mean_tool_calls,
+        verified_minus_minimal_mean_steps=verified_agg.mean_steps - minimal_agg.mean_steps,
+        verified_minus_minimal_mean_wall_seconds=verified_agg.mean_wall_seconds - minimal_agg.mean_wall_seconds,
+        verified_minus_minimal_repeated_failures=(
+            verified_agg.repeated_failure_count - minimal_agg.repeated_failure_count
+        ),
+        verified_minus_minimal_false_completions=(
+            verified_agg.false_completion_count - minimal_agg.false_completion_count
+        ),
+        verified_minus_minimal_false_facts=(
+            verified_agg.false_fact_count - minimal_agg.false_fact_count
+        ),
+    )
