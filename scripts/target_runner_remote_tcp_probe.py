@@ -4,6 +4,7 @@ import hashlib
 import json
 import socket
 import threading
+import time
 
 from ctf_harness.manifest.models import ChallengeManifest
 from ctf_harness.operational.models import (
@@ -14,9 +15,9 @@ from ctf_harness.operational.models import (
 )
 from ctf_harness.target.remote import RemoteTcpRunner
 
-
 REQUEST = b"TARGET_RUNNER_PING_513\n"
 RESPONSE = b"TARGET_RUNNER_PONG_513\n"
+TAIL = b"TAIL"
 ARTIFACT_SHA = "a" * 64
 RUNNER_DIGEST = "sha256:" + "f" * 64
 
@@ -28,7 +29,9 @@ def _serve(listener: socket.socket, errors: list[str]) -> None:
             received = conn.recv(4096)
             if received != REQUEST:
                 raise AssertionError(f"unexpected request: {received!r}")
-            conn.sendall(RESPONSE)
+            conn.sendall(b"TARGET_RUNNER_")
+            time.sleep(0.05)
+            conn.sendall(b"PONG_513\n" + TAIL)
     except Exception as exc:
         errors.append(f"{type(exc).__name__}: {exc}")
     finally:
@@ -67,11 +70,7 @@ def main() -> int:
     endpoint = f"tcp://127.0.0.1:{port}"
     challenge = _challenge(endpoint)
     target = RemoteTargetSpec(endpoint=endpoint, transport=RemoteTransport.TCP)
-    policy = NetworkPolicy(
-        challenge_transport=True,
-        general_internet=False,
-        external_retrieval=False,
-    )
+    policy = NetworkPolicy(challenge_transport=True, general_internet=False, external_retrieval=False)
     runner = RemoteTcpRunner(
         challenge,
         target,
@@ -87,20 +86,26 @@ def main() -> int:
 
     session = runner.open_session()
     session.send(REQUEST)
-    response = session.read(1024)
+    response = session.read_until(b"\n", wait_seconds=0.5)
     assert response == RESPONSE
+    assert session.pending_bytes == len(TAIL)
+    assert session.read_exact(len(TAIL), wait_seconds=0.2) == TAIL
+    assert session.pending_bytes == 0
     receipt = session.close()
 
     thread.join(timeout=2.0)
     assert not thread.is_alive()
     assert not errors, errors
+    network_response = RESPONSE + TAIL
     assert receipt.closed
     assert receipt.challenge_manifest_fingerprint == challenge.manifest_fingerprint
     assert receipt.sent_sha256 == hashlib.sha256(REQUEST).hexdigest()
-    assert receipt.received_sha256 == hashlib.sha256(RESPONSE).hexdigest()
+    assert receipt.received_sha256 == hashlib.sha256(network_response).hexdigest()
+    assert receipt.received_bytes == len(network_response)
     serialized_receipt = json.dumps(receipt.descriptor(), sort_keys=True)
     assert REQUEST.decode().strip() not in serialized_receipt
     assert RESPONSE.decode().strip() not in serialized_receipt
+    assert TAIL.decode() not in serialized_receipt
 
     blocked = False
     try:
@@ -119,38 +124,30 @@ def main() -> int:
 
     unadmitted = False
     try:
-        RemoteTcpRunner(
-            _challenge("tcp://127.0.0.1:1"),
-            target,
-            network_policy=policy,
-        )
+        RemoteTcpRunner(_challenge("tcp://127.0.0.1:1"), target, network_policy=policy)
     except ValueError:
         unadmitted = True
     assert unadmitted
 
-    print(
-        json.dumps(
-            {
-                "probe": "ctf-target-runner-remote-tcp-controlled-v2",
-                "all_passed": True,
-                "challenge_manifest_fingerprint": challenge.manifest_fingerprint,
-                "endpoint_id": runner.endpoint_id,
-                "pinned_ips": list(runner.pinned_ips),
-                "peer_ip": receipt.peer_ip,
-                "sent_sha256": receipt.sent_sha256,
-                "received_sha256": receipt.received_sha256,
-                "event_fingerprint": receipt.event_fingerprint,
-                "challenge_transport": True,
-                "general_internet": False,
-                "external_retrieval": False,
-                "plaintext_persisted": False,
-                "blocked_policy_rejected": blocked,
-                "unadmitted_endpoint_rejected": unadmitted,
-            },
-            sort_keys=True,
-            indent=2,
-        )
-    )
+    print(json.dumps({
+        "probe": "ctf-target-runner-remote-tcp-controlled-v3",
+        "all_passed": True,
+        "challenge_manifest_fingerprint": challenge.manifest_fingerprint,
+        "endpoint_id": runner.endpoint_id,
+        "pinned_ips": list(runner.pinned_ips),
+        "peer_ip": receipt.peer_ip,
+        "sent_sha256": receipt.sent_sha256,
+        "received_sha256": receipt.received_sha256,
+        "event_fingerprint": receipt.event_fingerprint,
+        "challenge_transport": True,
+        "general_internet": False,
+        "external_retrieval": False,
+        "delayed_response_accumulated": True,
+        "delimiter_overread_preserved": True,
+        "plaintext_persisted": False,
+        "blocked_policy_rejected": blocked,
+        "unadmitted_endpoint_rejected": unadmitted,
+    }, sort_keys=True, indent=2))
     return 0
 
 
