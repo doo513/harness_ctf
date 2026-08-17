@@ -7,12 +7,14 @@ from ctf_harness.domains.pwn import PwnDomainModule
 from ctf_harness.domains.registry import DomainRegistry
 from ctf_harness.domains.standard import CryptoPlaybook, ForensicsPlaybook, MiscPlaybook, ReversePlaybook, WebPlaybook
 from ctf_harness.sandbox import AnalysisSandbox
+from ctf_harness.target.remote import RemoteTcpRunner
 from ctf_harness.target.runners import NativeRunner, TargetRunner
 from ctf_harness.tools.capabilities import CapabilityCatalog
 from ctf_harness.tools.domain_recon import make_domain_recon_handler
 from ctf_harness.tools.recon import make_pwn_recon_handler
 from ctf_harness.tools.crash import make_crash_probe_tool
 from ctf_harness.tools.control import make_control_probe_tool
+from ctf_harness.tools.remote_tcp import RemoteTcpToolRuntime
 from ctf_harness.tools.scoped_http import ChallengeHttpClient
 from ctf_harness.tools.target_exec import make_target_exec_tool
 
@@ -54,6 +56,7 @@ class VerifiedCTFProfile(CTFProfile):
         analysis_sandbox: AnalysisSandbox | None = None,
         capability_catalog: CapabilityCatalog | None = None,
         challenge_http: ChallengeHttpClient | None = None,
+        remote_tcp_runner: RemoteTcpRunner | None = None,
     ):
         super().__init__(workspace=workspace, external_oracle=external_oracle, execution_backend=execution_backend)
         self.flag_completion_oracle = flag_completion_oracle
@@ -97,6 +100,12 @@ class VerifiedCTFProfile(CTFProfile):
         if challenge_http is not None and not isinstance(challenge_http, ChallengeHttpClient):
             raise ValueError("challenge_http must be ChallengeHttpClient when provided")
         self.challenge_http = challenge_http
+        if remote_tcp_runner is not None and not isinstance(remote_tcp_runner, RemoteTcpRunner):
+            raise ValueError("remote_tcp_runner must be RemoteTcpRunner when provided")
+        self.remote_tcp_runner = remote_tcp_runner
+        self.remote_tcp_tool_runtime = (
+            None if remote_tcp_runner is None else RemoteTcpToolRuntime(remote_tcp_runner)
+        )
 
     def tools(self):
         tools = super().tools()
@@ -149,6 +158,8 @@ class VerifiedCTFProfile(CTFProfile):
             tools["host_capability"] = self.capability_catalog.make_tool()
         if self.challenge_http is not None:
             tools["scoped_http"] = self.challenge_http.make_tool()
+        if self.remote_tcp_tool_runtime is not None:
+            tools["remote_tcp"] = self.remote_tcp_tool_runtime.make_tool()
         return tools
 
     def verifiers(self):
@@ -174,8 +185,6 @@ class VerifiedCTFProfile(CTFProfile):
         return super().completion_oracle()
 
     def task_progress_snapshot(self, *, goal, state):
-        # Only Pwn currently has a claim-specific semantic progress module. Do
-        # not project Pwn milestones into Crypto/Web/Reverse/Forensics/Misc runs.
         if "pwn" not in self.active_domains:
             return None
         facts = getattr(state, "facts", {})
