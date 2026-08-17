@@ -11,6 +11,14 @@ from .metrics import BenchmarkRunRecord
 from .runner import BenchmarkPlan
 
 
+def _is_sha256(value: str) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(ch in "0123456789abcdef" for ch in value)
+    )
+
+
 def record_descriptor(record: BenchmarkRunRecord) -> dict[str, object]:
     return {
         "run_id": record.run_id,
@@ -20,6 +28,8 @@ def record_descriptor(record: BenchmarkRunRecord) -> dict[str, object]:
         "mode": record.mode.value,
         "arm": record.arm.value,
         "repeat_index": record.repeat_index,
+        "adjudicator_id": record.adjudicator_id,
+        "adjudication_evidence_sha256": record.adjudication_evidence_sha256,
         "oracle_accepted": record.oracle_accepted,
         "completed_claimed": record.completed_claimed,
         "highest_proof_level": record.highest_proof_level,
@@ -40,6 +50,14 @@ def record_descriptor(record: BenchmarkRunRecord) -> dict[str, object]:
 class BenchmarkResultBundle:
     plan_fingerprint: str
     records: tuple[BenchmarkRunRecord, ...]
+
+    def __post_init__(self) -> None:
+        if not _is_sha256(self.plan_fingerprint):
+            raise ValueError("plan_fingerprint must be lowercase SHA-256 hex")
+        if not isinstance(self.records, tuple):
+            raise ValueError("records must be an immutable tuple")
+        if not self.records:
+            raise ValueError("result bundle must contain at least one record")
 
     @classmethod
     def finalize(
@@ -67,6 +85,8 @@ class BenchmarkResultBundle:
                 raise ValueError("result mode/arm differs from planned run")
             if row.repeat_index != spec.repeat_index:
                 raise ValueError("result repeat index differs from planned run")
+            if not row.adjudicator_id.strip() or not _is_sha256(row.adjudication_evidence_sha256):
+                raise ValueError("result record lacks a valid independent adjudication evidence identity")
 
         return cls(
             plan_fingerprint=plan.fingerprint(),
@@ -106,4 +126,14 @@ class BenchmarkResultBundle:
             raise IntegrityError("unsupported benchmark result schema")
         if body.get("plan_fingerprint") != expected_plan_fingerprint:
             raise IntegrityError("benchmark result bundle belongs to a different plan")
+        records = body.get("records")
+        if not isinstance(records, list) or not records:
+            raise IntegrityError("benchmark result bundle contains no records")
+        for record in records:
+            if not isinstance(record, dict):
+                raise IntegrityError("benchmark result record is malformed")
+            if not isinstance(record.get("adjudicator_id"), str) or not record["adjudicator_id"].strip():
+                raise IntegrityError("benchmark result record lacks adjudicator identity")
+            if not _is_sha256(record.get("adjudication_evidence_sha256")):
+                raise IntegrityError("benchmark result record lacks adjudication evidence hash")
         return body
