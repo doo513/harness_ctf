@@ -59,3 +59,5 @@ jobs:
         run: sudo -E "$(command -v python)" scripts/pwn_local_proof_semantic_probe.py
       - name: Controlled Pwn target-environment compatibility probe
         run: python scripts/pwn_environment_compatibility_probe.py
+      - name: Controlled Pwn remote-behavior TCP probe
+        run: python scripts/pwn_remote_behavior_probe.py
