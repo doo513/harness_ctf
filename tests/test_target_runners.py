@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 
 from ctf_harness.operational.models import RuntimeKind
-from ctf_harness.target.runners import NativeRunner, QemuUserRunner, fingerprint_workspace_tree
+from ctf_harness.target.runners import (
+    CustomArgvRunner,
+    NativeRunner,
+    QemuUserRunner,
+    fingerprint_workspace_tree,
+)
 
 
 def _sha(path: Path) -> str:
@@ -59,6 +64,76 @@ def test_native_runner_rejects_target_hash_mismatch_and_escape(tmp_path: Path) -
         )
     with pytest.raises(ValueError, match="escapes workspace"):
         NativeRunner().build_launch(workspace=workspace, target_relpath="../outside")
+
+
+def test_custom_argv_runner_binds_fixed_launcher_and_args(tmp_path: Path) -> None:
+    workspace, target = _workspace(tmp_path)
+    launcher = tmp_path / "launcher"
+    launcher.write_bytes(b"fixed-launcher-v1")
+    launcher.chmod(0o755)
+
+    runner = CustomArgvRunner(
+        profile_id="fixed-wrapper",
+        launcher_path=str(launcher.resolve()),
+        launcher_sha256=_sha(launcher),
+        fixed_args=("--mode", "challenge"),
+    )
+    launch = runner.build_launch(
+        workspace=workspace,
+        target_relpath="chal",
+        expected_target_sha256=_sha(target),
+    )
+
+    assert launch.runtime_kind is RuntimeKind.CUSTOM_ARGV
+    assert launch.target_sha256 == _sha(target)
+    assert launch.argv == (
+        str(launcher.resolve()),
+        "--mode",
+        "challenge",
+        "./chal",
+    )
+    assert launch.runtime_args == ("--mode", "challenge")
+    assert len(launch.runtime_artifacts) == 1
+    assert launch.runtime_artifacts[0].role == "launcher"
+    assert launch.runtime_artifacts[0].sha256 == _sha(launcher)
+    assert launch.target_sha256 not in repr(launch.runtime_descriptor())
+
+
+def test_custom_argv_runner_rejects_mutated_launcher_and_dynamic_arg_shapes(tmp_path: Path) -> None:
+    workspace, target = _workspace(tmp_path)
+    launcher = tmp_path / "launcher"
+    launcher.write_bytes(b"launcher-v1")
+    launcher.chmod(0o755)
+    original_sha = _sha(launcher)
+
+    runner = CustomArgvRunner(
+        profile_id="fixed-wrapper",
+        launcher_path=str(launcher.resolve()),
+        launcher_sha256=original_sha,
+        fixed_args=("--fixed",),
+    )
+    launcher.write_bytes(b"launcher-v2")
+    with pytest.raises(ValueError, match="launcher SHA-256 differs"):
+        runner.build_launch(
+            workspace=workspace,
+            target_relpath="chal",
+            expected_target_sha256=_sha(target),
+        )
+
+    with pytest.raises(ValueError, match="fixed_args"):
+        CustomArgvRunner(
+            profile_id="bad-empty-arg",
+            launcher_path=str(launcher.resolve()),
+            launcher_sha256=_sha(launcher),
+            fixed_args=("",),
+        )
+    with pytest.raises(ValueError, match="fixed_args"):
+        CustomArgvRunner(
+            profile_id="bad-nul-arg",
+            launcher_path=str(launcher.resolve()),
+            launcher_sha256=_sha(launcher),
+            fixed_args=("bad\x00arg",),
+        )
 
 
 def test_qemu_runner_binds_qemu_loader_and_sysroot_without_replacing_target_identity(tmp_path: Path) -> None:
