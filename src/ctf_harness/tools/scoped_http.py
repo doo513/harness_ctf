@@ -4,7 +4,7 @@ import base64
 from dataclasses import dataclass
 from typing import Mapping
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from harness.core.tools import SideEffect, ToolSpec
@@ -25,7 +25,8 @@ def _origin(url: str) -> tuple[str, str, int | None]:
 def _canonical_origin(url: str) -> str:
     scheme, host, port = _origin(url)
     default = 80 if scheme == "http" else 443
-    authority = host if port in {None, default} else f"{host}:{port}"
+    host_for_authority = f"[{host}]" if ":" in host else host
+    authority = host_for_authority if port in {None, default} else f"{host_for_authority}:{port}"
     return f"{scheme}://{authority}"
 
 
@@ -52,9 +53,9 @@ class ChallengeHttpClient:
         if len(set(normalized)) != len(normalized):
             raise ValueError("challenge HTTP allowed origins must be unique")
         object.__setattr__(self, "allowed_origins", normalized)
-        if self.timeout_seconds <= 0:
+        if not isinstance(self.timeout_seconds, (int, float)) or isinstance(self.timeout_seconds, bool) or self.timeout_seconds <= 0:
             raise ValueError("HTTP timeout must be positive")
-        if not isinstance(self.max_response_bytes, int) or self.max_response_bytes <= 0:
+        if not isinstance(self.max_response_bytes, int) or isinstance(self.max_response_bytes, bool) or self.max_response_bytes <= 0:
             raise ValueError("max_response_bytes must be positive")
 
     def require_allowed(self, url: str) -> str:
@@ -103,7 +104,6 @@ class ChallengeHttpClient:
                 final_url = self.require_allowed(response.geturl())
                 response_headers = dict(response.headers.items())
         except HTTPError as exc:
-            # HTTP status errors still carry useful challenge observations.
             data = exc.read(self.max_response_bytes + 1)
             status = int(exc.code)
             final_url = self.require_allowed(exc.geturl())
@@ -140,7 +140,7 @@ class ChallengeHttpClient:
             handler=lambda url, method="GET", headers=None, body_b64=None: self.request(
                 url, method=method, headers=headers, body_b64=body_b64
             ),
-            side_effect=SideEffect.NETWORK,
+            side_effect=SideEffect.EXTERNAL,
             idempotent=False,
             permission="auto",
             failure_modes=["origin_not_admitted", "cross_origin_redirect", "network_error", "response_too_large"],
