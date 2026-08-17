@@ -11,6 +11,10 @@ from ctf_harness.manifest.models import ChallengeManifest
 from .models import BenchmarkCase, EvaluationMode
 
 
+FIRST_PWN_PILOT_MIN_CASES = 10
+FIRST_PWN_PILOT_MAX_CASES = 15
+
+
 @dataclass(frozen=True)
 class CorpusLock:
     name: str
@@ -104,3 +108,22 @@ def freeze_corpus(
         cases=tuple(cases),
         unpublished=unpublished,
     )
+
+
+def validate_first_pwn_pilot(corpus: CorpusLock) -> None:
+    """Fail closed unless a corpus qualifies for the first meaningful Pwn pilot.
+
+    Passing this function establishes only declared corpus shape/identity policy;
+    it does not independently prove that challenge authors have never published
+    the material or that contamination is impossible.
+    """
+    if corpus.mode is not EvaluationMode.RESEARCH:
+        raise ValueError("first Pwn pilot requires research mode")
+    if not corpus.unpublished:
+        raise ValueError("first Pwn pilot requires an unpublished/private corpus declaration")
+    if not (FIRST_PWN_PILOT_MIN_CASES <= len(corpus.cases) <= FIRST_PWN_PILOT_MAX_CASES):
+        raise ValueError(
+            f"first Pwn pilot requires {FIRST_PWN_PILOT_MIN_CASES}-{FIRST_PWN_PILOT_MAX_CASES} frozen cases"
+        )
+    if any(case.category.strip().lower() != "pwn" for case in corpus.cases):
+        raise ValueError("first Pwn pilot must contain only Pwn cases")
