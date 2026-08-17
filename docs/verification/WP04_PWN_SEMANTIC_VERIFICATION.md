@@ -1,6 +1,6 @@
 # WP04 — Pwn Semantic Verification
 
-**Status:** `PARTIAL` — static semantics + P1 crash + P2 x86_64 control + P3 local proof PASS; P4/P5 OPEN; P6 completion OPEN
+**Status:** `PARTIAL` — static semantics + P1 crash + P2 x86_64 control + P3 local proof + P4 environment compatibility PASS; P5/P6 OPEN
 
 ## 1. Implemented semantic authority
 
@@ -14,8 +14,9 @@ Current registered claim contracts are intentionally small and claim-specific:
 - `ctf.pwn.crash_reproducible` — EXECUTION
 - `ctf.pwn.control_flow` — EXECUTION, x86_64 RIP-only scope
 - `ctf.pwn.local_exploit` — EXECUTION, control-plane local-oracle receipt only
+- `ctf.environment.compatible` — LOGICAL, explicit target-runtime compatibility contract
 
-No semantic authority is registered yet for `ctf.environment.compatible`, `ctf.pwn.remote_behavior`, or `ctf.flag_valid`.
+No semantic authority is registered yet for `ctf.pwn.remote_behavior` or final flag validity/completion.
 
 ## 2. Evidence-validation logic
 
@@ -31,81 +32,83 @@ Static verifiers require registered Core artifact/evidence refs, successful `pwn
 
 `pwn_control_probe` runs a fixed GDB probe through the same namespace boundary. `ControlFlowVerifier` requires repeated observations of the same target/input and binds observed `RIP` to an exact little-endian byte sequence and offset in the supplied input. A crash alone is insufficient.
 
-P2 failure/fix history is intentionally preserved:
-
-1. Initial live probe failed because hosted runner did not contain GDB.
-2. GDB was explicitly installed and version recorded; probe still failed.
-3. Diagnostics showed RIP remained `0x401016`, the synthetic target's `ret` instruction. Root cause: the original marker `0x4141414141414141` is non-canonical on x86_64, so `ret` faults before RIP can become that value.
-4. The verifier was **not weakened**. Only the synthetic test vector was changed to canonical unmapped `0x0000414141414141`.
-5. CI run `32014073885` then observed the same RIP value twice at input offset 0 and passed.
+P2 failure/fix history is preserved: GDB absence was detected; after installation, the original non-canonical marker `0x4141414141414141` caused a #GP at `ret`, leaving RIP at `0x401016`. The verifier was not weakened; only the synthetic vector was changed to canonical unmapped `0x0000414141414141`. Run `32014073885` then observed the intended RIP twice at offset 0.
 
 ### P3 — local proof
 
-P3 does not accept Actor prose, a `shell` string, or exit-code-only evidence. `ExecutableDigestLocalProofOracle` is a control-plane oracle with an operator-fixed expected stdout digest. It executes `[./exploit, ./target]` only through the supplied attested backend and requires a live strong filesystem boundary.
+P3 does not accept Actor prose, a `shell` string, or exit-code-only evidence. `ExecutableDigestLocalProofOracle` is a control-plane oracle with an operator-fixed expected stdout digest. It executes `[./exploit, ./target]` through the attested backend and requires a live strong filesystem boundary.
 
-The durable `LocalProofReceipt` binds:
+`LocalProofReceipt` binds target SHA-256, exploit SHA-256, target-environment fingerprint, stable oracle ID, oracle evidence hash, independence level and decision. `LocalExploitVerifier` requires Core observation source `pwn_local_proof_oracle` and exact identity binding.
 
-- target SHA-256,
-- exploit SHA-256,
-- target-environment fingerprint,
-- stable oracle ID,
-- oracle evidence hash,
-- oracle independence level,
-- accepted/rejected decision.
+### P4 — target-environment compatibility
 
-`LocalExploitVerifier` additionally requires Core observation source `pwn_local_proof_oracle` and exact target/exploit/environment/oracle identity. Actor-like receipt provenance is rejected.
+P4 deliberately does **not** reuse `admission.EnvironmentFingerprint`. Admission fingerprint describes the harness runner; P4 must describe the challenge target/runtime. `TargetEnvironmentFingerprint` therefore has separate semantics.
 
-## 3. Execution evidence
+Baseline Pwn compatibility fields are mandatory:
 
-**E-WP04-01 — P1:** run `32015174592`, `pwn-crash-semantic-live`: `all_passed=true`, `attestation_source=runtime_probe`, evidence count 2, signal 11.
+- architecture
+- bits
+- endianness
+- PIE
+- NX
+- protocol
+- target revision
 
-**E-WP04-02 — P2:** same run, GDB `15.1-1ubuntu1~24.04.1`; repeated control records both observed `RIP=0x414141414141`, input offset 0, identical target/input hashes; `all_passed=true`.
+Challenge-specific dependencies may be added explicitly; the controlled P4 contract additionally included `libc_sha256` and `loader_sha256`. A contract may not omit baseline fields. Missing/unknown values make compatibility inconclusive rather than silently equal.
 
-**E-WP04-03 — P3:** same run, `pwn-local-proof-live`: `accepted=true`, `attestation_source=runtime_probe`, `filesystem_isolated=true`, exact target/exploit/environment hashes recorded, stable oracle ID `pwn_local_executable_digest:b0f20fb6fe00fbc7`.
+Trusted environment sources are restricted to `local_probe`, `remote_probe`, and `operator_manifest`. `EnvironmentCompatibilityVerifier` requires a registered Core observation source `pwn_environment_compare`, a compatible receipt, no differences/missing fields, all baseline fields, and exact local/remote fingerprint + contract binding.
 
-**E-WP04-04 — P3 negative controls:** `actor_source_rejected=true`, `rejected_oracle_rejected=true`, and a mismatched exploit hash is rejected by the verifier.
+## 3. Execution / controlled evidence
 
-**E-WP04-05 — Core regression:** same run: base `219 passed / 7 skipped`; Core freeze and Stage02/04/05/06/07/08 probes pass; core freeze reports `new_stage_created=false`.
+**E-WP04-01 — latest full gate:** CI run `32015639019` SUCCESS. Base `219 passed / 7 skipped`; Core freeze and Stage02/04/05/06/07/08 probes PASS; `new_stage_created=false`; CTF regression `18 passed`.
 
-**E-WP04-06 — CTF regression:** same run: `15 passed`.
+**E-WP04-02 — P1/P2/P3 regression:** same run re-executed all prior live probes successfully. P2 again observed `RIP=0x414141414141`, offset 0 twice; P3 again reported `accepted=true`, `runtime_probe`, filesystem isolation, Actor-source rejection and rejected-oracle rejection.
 
-**E-WP04-07 — failed-gate evidence:** P3 implementation commit `8154e778...` produced failed run `32014880957`: base/Core probes passed but an existing regression test still encoded the old non-contiguous P5 ladder rule. The implementation was not declared complete. Test contract was corrected in commit `d531dcb8...`, then the full gate passed.
+**E-WP04-03 — P4 positive contract:** `pwn-environment-compatibility-controlled` reported `all_passed=true`, `compatible=true`. Local and remote target fingerprints were both `3f90aea773eba2fdc4b10a5270224f59188ca6e2d758f4b52d5cfa3bee3149fe` under the declared baseline + libc/loader contract.
+
+**E-WP04-04 — P4 negative controls:** same probe reports `mismatch_rejected=true`, `missing_field_rejected=true`, `actor_source_rejected=true`, `untrusted_source_rejected=true`, `baseline_omission_rejected=true`.
+
+**E-WP04-05 — prior failed gate retained:** P3 feature run `32014880957` failed because an old regression encoded non-contiguous P5 semantics. Base/Core remained green; the stale test contract was corrected and the next full run passed.
 
 ## 4. Appropriateness evaluation
 
-The current P1–P3 design is appropriate for a verified-state harness because each stronger semantic claim requires correspondingly stronger evidence:
+The semantic strength increases with the proof level:
 
-- P1 proves reproducible failure, not exploitability.
-- P2 proves input-derived instruction-pointer control in the currently supported x86_64 scope, not a working exploit.
-- P3 proves one exact exploit artifact satisfied an operator-fixed local oracle against one exact target/environment. It does not infer remote success.
+- P1: reproducible failure only.
+- P2: input-derived x86_64 RIP control only.
+- P3: exact local exploit/target/environment satisfies an operator-fixed local oracle.
+- P4: an explicit set of required target-runtime properties is known and equal under trusted sources.
 
-The P3 oracle is intentionally outside the Actor tool authority. This avoids turning self-authored exploit output into self-verification.
+P4 is appropriately LOGICAL rather than EXECUTION because the claim is an equality/compatibility theorem over trusted environment observations/manifests; it does not itself execute the remote exploit. Dynamic remote behavior remains P5.
 
-## 5. Structural logic evaluation
+Separating runner identity from target-runtime identity fixes a truth-model ambiguity that could otherwise declare two targets compatible merely because the harness ran in the same container.
+
+## 5. Structural logic / truth review
 
 ### Positive
 
-- Core `HarnessState.facts` remains the sole authoritative fact store.
-- P0–P6 remain CTF proof projections, not new Core verification levels or stages.
-- Every registered CTF semantic rule maps to a real verifier.
-- Evidence is content-integrity checked and provenance constrained.
-- P2 failure investigation changed the faulty test vector rather than weakening semantic checks.
-- P3 separates exploit generation from proof authority.
+- Core `HarnessState.facts` remains the only authoritative fact store.
+- No Core stage or `VerificationLevel` was added.
+- Every registered semantic rule names a real verifier.
+- P0–P4 proof semantics are separated from Actor narrative and retrieval content.
+- P4 contract cannot be weakened below the mandatory baseline fields.
+- Additional runtime dependencies such as libc/loader are explicit contract inputs, not hidden assumptions.
 
 ### Remaining structural problems
 
-1. **P2 architecture scope:** only x86_64 RIP control is currently semantically authorized. Other architectures must fail closed.
-2. **P3 oracle generality:** the implemented digest oracle is a deterministic local-proof mechanism, not yet a universal proof model for shell, file-read, protocol, or stateful exploit effects.
-3. **P4 absent:** local and remote target-runtime compatibility is not yet a verified fact.
-4. **P5 absent:** no remote behavior receipt/verifier exists yet.
-5. **P6 absent:** accepted flag receipt is not yet wired as the Core completion oracle.
-6. **Runner reproducibility:** engineering CI installs GDB dynamically; a frozen benchmark runner image/tool inventory remains an open WP00 item.
+1. P2 semantic authority is x86_64 RIP-only.
+2. P3 digest oracle is not yet a universal local proof vocabulary.
+3. P4 does not discover a real remote environment by itself; it verifies equality of supplied trusted target-environment evidence.
+4. `operator_manifest` is only truthful if admission/control-plane code supplies it; Actor-authored manifest data must never receive that provenance label.
+5. P5 remote behavior receipt/verifier is absent.
+6. P6 external flag acceptance is not wired to Core completion.
+7. Benchmark runner image/tool inventory remains unfrozen; GDB is dynamically installed in engineering CI.
 
 ## 6. Truthfulness evaluation
 
-**Supported by current evidence:** the implemented static claims, reproducible crash contract, x86_64 input-derived RIP control contract, and one control-plane local-proof contract execute successfully under the tested CI namespace boundary and fail the implemented negative controls.
+**Supported:** static properties, controlled P1 crash, controlled P2 x86_64 RIP control, controlled P3 local oracle proof, and P4 compatibility-contract semantics including negative controls.
 
-**Not supported:** arbitrary Pwn exploitability, arbitrary local-shell success, remote exploitation, broad architecture coverage, live CTF success, or benchmark superiority. The P1–P3 probes are controlled engineering tests, not a real-world CTF benchmark.
+**Not supported:** actual discovery of arbitrary remote libc/loader/protocol facts, arbitrary Pwn exploitability, live remote exploitation, live CTF success, or benchmark superiority. P4 is a controlled semantic-contract test, not real-world remote-environment proof.
 
 ## 7. Exit gate
 
@@ -115,8 +118,8 @@ The P3 oracle is intentionally outside the Actor tool authority. This avoids tur
 - [x] P1 reproducible crash verifier
 - [x] P2 x86_64 control verifier
 - [x] P3 control-plane local exploit verifier
-- [ ] P4 target-environment compatibility verifier
+- [x] P4 target-environment compatibility verifier
 - [ ] P5 remote behavior verifier
 - [ ] P6 external submission integrated with Core completion
 
-**Decision:** `PARTIAL`. Proceed to P4 only; do not claim a complete Pwn proof slice yet.
+**Decision:** `PARTIAL`. P4 gate is complete; proceed to P5 only.
