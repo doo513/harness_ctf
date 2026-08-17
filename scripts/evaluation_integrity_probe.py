@@ -21,6 +21,7 @@ from ctf_harness.proof.models import ProofLevel
 
 
 RUNNER_IMAGE = "sha256:" + "a" * 64
+RUN_EVIDENCE_SHA = "c" * 64
 
 
 def fixture_case(index: int):
@@ -58,10 +59,12 @@ def experiment():
     )
 
 
-def adjudication(*, evidence_byte: str, accepted: bool, proof, invalid=()):
+def adjudication(spec, *, evidence_byte: str, accepted: bool, proof, invalid=()):
     return IndependentAdjudication(
         adjudicator_id="controlled-fixture-adjudicator",
         evidence_sha256=evidence_byte * 64,
+        run_id=spec.run_id(),
+        run_evidence_sha256=RUN_EVIDENCE_SHA,
         oracle_accepted=accepted,
         highest_proof_level=proof,
         invalid_verified_fact_keys=tuple(invalid),
@@ -74,7 +77,7 @@ def execution_evidence(*, executor_byte: str) -> RunExecutionEvidence:
         executor_fingerprint=executor_byte * 64,
         boundary_attestor_id="controlled-fixture-boundary-attestor",
         boundary_evidence_sha256="b" * 64,
-        run_evidence_sha256="c" * 64,
+        run_evidence_sha256=RUN_EVIDENCE_SHA,
     )
 
 
@@ -121,6 +124,7 @@ def main() -> int:
             wall_seconds=12.0,
         ),
         adjudication(
+            minimal_spec,
             evidence_byte="1",
             accepted=False,
             proof=ProofLevel.P0_SURFACE,
@@ -138,7 +142,7 @@ def main() -> int:
             steps=8,
             wall_seconds=10.0,
         ),
-        adjudication(evidence_byte="2", accepted=False, proof=None),
+        adjudication(verified_spec, evidence_byte="2", accepted=False, proof=None),
         execution_evidence(executor_byte="d"),
     )
     paired = compare_paired_ab((minimal_record, verified_record))
@@ -153,7 +157,6 @@ def main() -> int:
     assert len(minimal_record.run_evidence_sha256) == 64
     assert len(minimal_record.adjudication_evidence_sha256) == 64
 
-    # Exact result-plan binding without fabricating outcomes for all 20 fixture runs.
     one_case_corpus = freeze_corpus(
         name="result-bundle-fixture",
         revision="fixture-result-r1",
@@ -182,7 +185,7 @@ def main() -> int:
         assert all(len(record["adjudication_evidence_sha256"]) == 64 for record in loaded["records"])
 
     print(json.dumps({
-        "probe": "ctf-evaluation-integrity-controlled-v3",
+        "probe": "ctf-evaluation-integrity-controlled-v4",
         "all_passed": True,
         "fixture_only": True,
         "actual_private_challenge_corpus_supplied": False,
@@ -205,7 +208,8 @@ def main() -> int:
         "repeated_failure_counted": minimal_record.repeated_failure_count,
         "execution_evidence_bound": True,
         "boundary_attestation_evidence_bound": True,
-        "adjudication_evidence_bound": True,
+        "adjudication_run_id_bound": True,
+        "adjudication_run_evidence_bound": True,
         "result_bundle_bound_to_plan": True,
         "result_bundle_sha256": result_digest,
         "effectiveness_measured": False,
