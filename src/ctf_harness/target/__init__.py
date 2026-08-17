@@ -1,5 +1,6 @@
 from .models import RuntimeArtifactIdentity, RuntimeLaunch
-from .runners import NativeRunner, QemuUserRunner, TargetRunner
+from .remote import RemoteTcpRunner, RemoteTcpSession, RemoteTranscriptReceipt
+from .runners import NativeRunner, QemuUserRunner, TargetRunner, fingerprint_workspace_tree
 
 __all__ = [
     "RuntimeArtifactIdentity",
@@ -7,4 +8,8 @@ __all__ = [
     "NativeRunner",
     "QemuUserRunner",
     "TargetRunner",
+    "fingerprint_workspace_tree",
+    "RemoteTcpRunner",
+    "RemoteTcpSession",
+    "RemoteTranscriptReceipt",
 ]
