@@ -24,28 +24,27 @@ def _registered_observation_artifacts(context:dict,*,source:str):
 
 @dataclass(frozen=True)
 class StaticReconFieldVerifier:
-    name:str; claim_key:str; field:str; positive_only:bool=False
+    name:str; claim_key:str; field:str
     level=VerificationLevel.LOGICAL; covers=("ctf_semantic",)
     def verify(self,candidate:Any,context:dict)->VerificationResult:
         refs=list(context.get("claim_evidence_refs") or [])
         if context.get("claim_key")!=self.claim_key:return VerificationResult(False,self.level,"verifier is not bound to this exact claim key",evidence_refs=refs)
         try:loaded=_registered_observation_artifacts(context,source="pwn_recon")
         except Exception as exc:return VerificationResult(False,self.level,f"{type(exc).__name__}: {exc}",evidence_refs=refs)
-        values=[]; hashes=set()
+        values=[];hashes=set()
         for _,payload in loaded:
             output=payload.get("output")
             if not isinstance(output,dict):return VerificationResult(False,self.level,"pwn_recon output is not an object",evidence_refs=refs)
             if output.get("kind")!="pwn_recon_snapshot" or output.get("schema_version")!=1:return VerificationResult(False,self.level,"pwn_recon schema/kind mismatch",evidence_refs=refs)
             digest=output.get("artifact_sha256")
-            if not isinstance(digest,str) or len(digest)!=64:return VerificationResult(False,self.level,"pwn_recon artifact digest is invalid",evidence_refs=refs)
-            hashes.add(digest); values.append(output.get(self.field))
+            if not isinstance(digest,str) or len(digest)!=64 or any(ch not in "0123456789abcdef" for ch in digest):return VerificationResult(False,self.level,"pwn_recon artifact digest is invalid",evidence_refs=refs)
+            hashes.add(digest);values.append(output.get(self.field))
         if len(hashes)!=1:return VerificationResult(False,self.level,"claim evidence mixes multiple artifact identities",evidence_refs=refs)
         if not values or any(v!=values[0] for v in values[1:]):return VerificationResult(False,self.level,"claim evidence contains conflicting recon values",evidence_refs=refs)
         actual=values[0]
         if actual is None:return VerificationResult(False,self.level,"recon evidence is intentionally inconclusive for this field",evidence_refs=refs)
-        if self.positive_only and candidate is not True:return VerificationResult(False,self.level,"this verifier only authorizes a positive claim",evidence_refs=refs)
         ok=candidate==actual
         return VerificationResult(ok,self.level,f"deterministic pwn_recon {self.field}={actual!r}" if ok else f"candidate {candidate!r} disagrees with deterministic pwn_recon {actual!r}",evidence_refs=refs,details={"artifact_sha256":next(iter(hashes)),"field":self.field,"actual":actual},confidence=1.0 if ok else None)
 
 def static_pwn_verifiers():
-    return [StaticReconFieldVerifier("pwn_arch","ctf.pwn.arch","architecture"),StaticReconFieldVerifier("pwn_bits","ctf.pwn.bits","bits"),StaticReconFieldVerifier("pwn_endianness","ctf.pwn.endianness","endianness"),StaticReconFieldVerifier("pwn_nx","ctf.pwn.nx","nx"),StaticReconFieldVerifier("pwn_pie","ctf.pwn.pie","pie"),StaticReconFieldVerifier("pwn_canary_present","ctf.pwn.canary_present","canary_present",True)]
+    return [StaticReconFieldVerifier("pwn_arch","ctf.pwn.arch","architecture"),StaticReconFieldVerifier("pwn_bits","ctf.pwn.bits","bits"),StaticReconFieldVerifier("pwn_endianness","ctf.pwn.endianness","endianness"),StaticReconFieldVerifier("pwn_nx","ctf.pwn.nx","nx"),StaticReconFieldVerifier("pwn_pie","ctf.pwn.pie","pie")]
