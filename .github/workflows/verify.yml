@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: doo513/base_harness
-          ref: 20079ffd90cc063958f084da8286e05f38ccdef0
+          ref: 75834ac1ecb6c022771c2efee1f19495f356ee76
           path: third_party/base_harness
       - uses: actions/setup-python@v5
         with:
