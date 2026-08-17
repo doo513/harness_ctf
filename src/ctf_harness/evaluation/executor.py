@@ -6,7 +6,13 @@ from typing import Protocol
 from harness.core.storage import canonical_hash
 
 from .metrics import BenchmarkRunRecord, build_run_record
-from .models import BenchmarkRunSpec, EvaluationMode, IndependentAdjudication, RawRunOutcome
+from .models import (
+    BenchmarkRunSpec,
+    EvaluationMode,
+    IndependentAdjudication,
+    RawRunOutcome,
+    RunExecutionEvidence,
+)
 from .runner import BenchmarkPlan
 
 
@@ -149,7 +155,6 @@ def _validate_boundary(
         raise ValueError("execution-boundary attestation is for a different executor descriptor")
     if attestation.sandbox_id != descriptor.sandbox_id:
         raise ValueError("execution-boundary attestation sandbox differs from executor")
-
     if descriptor.web_search_enabled == attestation.web_search_blocked:
         raise ValueError("executor web-search descriptor conflicts with boundary attestation")
     if descriptor.external_retrieval_enabled == attestation.external_retrieval_blocked:
@@ -191,15 +196,13 @@ def execute_planned_run(
     boundary_attestation: ExecutionBoundaryAttestation,
     adjudicator: IndependentAdjudicator,
 ) -> BenchmarkRunRecord:
-    """Execute one exact planned run only after contract/boundary validation.
-
-    The executor is responsible for actually enforcing its sandbox and producing
-    boundary evidence. This function refuses to call it when descriptor and
-    attestation do not establish the declared boundary. It also rejects any
-    returned outcome that exceeds the frozen experiment budget. Final success
-    remains independent adjudication, never executor self-report.
-    """
+    """Execute one exact planned run only after contract/boundary validation."""
     _require_spec_in_plan(plan, spec)
+    if not callable(getattr(executor, "descriptor", None)) or not callable(getattr(executor, "execute", None)):
+        raise ValueError("executor must provide descriptor() and execute()")
+    if not callable(getattr(adjudicator, "adjudicate", None)):
+        raise ValueError("adjudicator must provide adjudicate()")
+
     descriptor = executor.descriptor()
     if not isinstance(descriptor, BenchmarkExecutorDescriptor):
         raise ValueError("executor descriptor must be BenchmarkExecutorDescriptor")
@@ -220,4 +223,12 @@ def execute_planned_run(
     )
     if not isinstance(adjudication, IndependentAdjudication):
         raise ValueError("adjudicator must return IndependentAdjudication")
-    return build_run_record(spec, receipt.outcome, adjudication)
+
+    execution_evidence = RunExecutionEvidence(
+        executor_id=descriptor.executor_id,
+        executor_fingerprint=descriptor.fingerprint(),
+        boundary_attestor_id=boundary_attestation.issuer_id,
+        boundary_evidence_sha256=boundary_attestation.evidence_sha256,
+        run_evidence_sha256=receipt.run_evidence_sha256,
+    )
+    return build_run_record(spec, receipt.outcome, adjudication, execution_evidence)
