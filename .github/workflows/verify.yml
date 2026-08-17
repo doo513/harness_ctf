@@ -61,3 +61,5 @@ jobs:
         run: python scripts/pwn_environment_compatibility_probe.py
       - name: Controlled Pwn remote-behavior TCP probe
         run: python scripts/pwn_remote_behavior_probe.py
+      - name: Core-integrated Pwn external flag completion probe
+        run: python scripts/pwn_flag_completion_probe.py
