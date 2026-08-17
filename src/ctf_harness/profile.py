@@ -8,6 +8,7 @@ from ctf_harness.target.runners import NativeRunner, TargetRunner
 from ctf_harness.tools.recon import make_pwn_recon_handler
 from ctf_harness.tools.crash import make_crash_probe_tool
 from ctf_harness.tools.control import make_control_probe_tool
+from ctf_harness.tools.target_exec import make_target_exec_tool
 from ctf_harness.verifiers.pwn.core import static_pwn_verifiers
 from ctf_harness.verifiers.pwn.crash import CrashReproducibleVerifier
 from ctf_harness.verifiers.pwn.control import ControlFlowVerifier
@@ -52,6 +53,13 @@ class VerifiedCTFProfile(CTFProfile):
         tools = super().tools()
         tools["argv"] = make_argv_tool(self.workspace, backend=self.execution_backend)
         tools["session"] = make_session_tool(self.workspace, backend=self.execution_backend)
+        tools["target_exec"] = make_target_exec_tool(
+            self.workspace,
+            backend=self.execution_backend,
+            runners=self.target_runners,
+            default_profile_id=self.default_target_profile_id,
+            expected_target_sha256=self.expected_target_sha256,
+        )
         tools["pwn_crash_probe"] = make_crash_probe_tool(
             self.workspace,
             backend=self.execution_backend,
