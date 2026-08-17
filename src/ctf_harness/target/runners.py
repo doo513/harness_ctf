@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import os
 from pathlib import Path
 from typing import Protocol
 
@@ -75,10 +76,11 @@ def _validate_fixed_args(values: tuple[str, ...], *, field_name: str) -> tuple[s
 
 
 def fingerprint_workspace_tree(path: Path) -> str:
-    """Hash a runtime tree by relative path and regular-file content.
+    """Hash a runtime tree by path, file bytes, and safe symlink identity.
 
-    Symlinks and non-regular entries fail closed so a stored tree fingerprint
-    cannot silently depend on host paths or special-file semantics.
+    Relative symlinks are accepted only when their resolved target remains inside
+    the runtime tree. Absolute or escaping links fail closed because their target
+    content would otherwise sit outside this fingerprint's authority.
     """
     path = Path(path).resolve(strict=True)
     if not path.is_dir():
@@ -87,13 +89,28 @@ def fingerprint_workspace_tree(path: Path) -> str:
     for item in sorted(path.rglob("*"), key=lambda value: value.relative_to(path).as_posix()):
         relative = item.relative_to(path).as_posix()
         if item.is_symlink():
-            raise ValueError(f"runtime tree contains symbolic link: {relative}")
+            link_target = os.readlink(item)
+            if not link_target or "\x00" in link_target or Path(link_target).is_absolute():
+                raise ValueError(f"runtime tree contains unsupported symbolic link: {relative}")
+            resolved_target = (item.parent / link_target).resolve(strict=True)
+            try:
+                resolved_target.relative_to(path)
+            except ValueError as exc:
+                raise ValueError(
+                    f"runtime tree symbolic link escapes tree: {relative}"
+                ) from exc
+            entries.append(
+                {"kind": "symlink", "path": relative, "target": link_target}
+            )
+            continue
         if item.is_dir():
             continue
         if not item.is_file():
             raise ValueError(f"runtime tree contains non-regular entry: {relative}")
-        entries.append({"path": relative, "sha256": _sha256_file(item)})
-    return canonical_hash({"files": entries})
+        entries.append(
+            {"kind": "file", "path": relative, "sha256": _sha256_file(item)}
+        )
+    return canonical_hash({"entries": entries})
 
 
 def _checked_target(
