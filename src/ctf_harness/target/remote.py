@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import ipaddress
+import math
+import select
 import socket
+import time
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -78,6 +81,13 @@ class RemoteTranscriptReceipt:
 
 
 class RemoteTcpSession:
+    """Bounded persistent TCP session for one admitted challenge endpoint.
+
+    Network bytes are hashed exactly once when received from the socket. Logical
+    reads may consume from an internal pending buffer, allowing delimiter/exact
+    reads to preserve over-read bytes without corrupting transcript provenance.
+    """
+
     def __init__(
         self,
         *,
@@ -103,6 +113,7 @@ class RemoteTcpSession:
         self._received = hashlib.sha256()
         self._sent_bytes = 0
         self._received_bytes = 0
+        self._pending = bytearray()
         self._events: list[dict[str, Any]] = [
             {"event": "open", "peer_ip": peer_ip, "peer_port": peer_port}
         ]
@@ -111,9 +122,54 @@ class RemoteTcpSession:
     def closed(self) -> bool:
         return self._closed
 
+    @property
+    def pending_bytes(self) -> int:
+        return len(self._pending)
+
     def _ensure_open(self) -> None:
         if self._closed:
             raise RuntimeError("remote TCP session is closed")
+
+    def _read_limit(self, value: int | None) -> int:
+        limit = self.max_read_bytes if value is None else value
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            raise ValueError("remote TCP read limit must be a positive integer")
+        if limit > self.max_read_bytes:
+            raise ValueError("remote TCP read exceeds configured per-action maximum")
+        return limit
+
+    def _wait_value(self, value: float | None, *, field_name: str, allow_zero: bool) -> float:
+        resolved = self.timeout_seconds if value is None else value
+        if (
+            not isinstance(resolved, (int, float))
+            or isinstance(resolved, bool)
+            or not math.isfinite(float(resolved))
+            or (float(resolved) < 0 if allow_zero else float(resolved) <= 0)
+        ):
+            relation = "non-negative" if allow_zero else "positive"
+            raise ValueError(f"{field_name} must be finite and {relation}")
+        return float(resolved)
+
+    def _record_network_read(self, data: bytes) -> None:
+        digest = hashlib.sha256(data).hexdigest()
+        self._received.update(data)
+        self._received_bytes += len(data)
+        self._events.append({"event": "read", "bytes": len(data), "sha256": digest})
+
+    def _recv_network(self, limit: int) -> bytes:
+        data = self._sock.recv(limit)
+        self._record_network_read(data)
+        return data
+
+    def _socket_ready(self, wait_seconds: float) -> bool:
+        ready, _, _ = select.select([self._sock], [], [], max(0.0, wait_seconds))
+        return bool(ready)
+
+    def _take_pending(self, count: int) -> bytes:
+        count = min(count, len(self._pending))
+        data = bytes(self._pending[:count])
+        del self._pending[:count]
+        return data
 
     def send(self, data: bytes) -> int:
         self._ensure_open()
@@ -125,26 +181,120 @@ class RemoteTcpSession:
         digest = hashlib.sha256(data).hexdigest()
         self._sent.update(data)
         self._sent_bytes += len(data)
-        self._events.append(
-            {"event": "send", "bytes": len(data), "sha256": digest}
-        )
+        self._events.append({"event": "send", "bytes": len(data), "sha256": digest})
         return len(data)
 
-    def read(self, max_bytes: int | None = None) -> bytes:
+    def read(
+        self,
+        max_bytes: int | None = None,
+        *,
+        wait_seconds: float = 0.0,
+        idle_grace_seconds: float = 0.05,
+    ) -> bytes:
+        """Read bytes, optionally accumulating delayed chunks in a bounded window.
+
+        With the default ``wait_seconds=0`` this preserves the historical
+        single-recv behavior (after consuming any pending bytes). A positive
+        wait observes until the overall deadline, stopping after an idle grace
+        period once at least one byte has been obtained.
+        """
+
         self._ensure_open()
-        limit = self.max_read_bytes if max_bytes is None else max_bytes
-        if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
-            raise ValueError("remote TCP read limit must be a positive integer")
-        if limit > self.max_read_bytes:
-            raise ValueError("remote TCP read exceeds configured per-action maximum")
-        data = self._sock.recv(limit)
-        digest = hashlib.sha256(data).hexdigest()
-        self._received.update(data)
-        self._received_bytes += len(data)
-        self._events.append(
-            {"event": "read", "bytes": len(data), "sha256": digest}
+        limit = self._read_limit(max_bytes)
+        wait = self._wait_value(wait_seconds, field_name="wait_seconds", allow_zero=True)
+        idle = self._wait_value(
+            idle_grace_seconds, field_name="idle_grace_seconds", allow_zero=True
         )
-        return data
+        output = bytearray(self._take_pending(limit))
+        if len(output) >= limit:
+            return bytes(output)
+
+        if wait == 0:
+            if output:
+                return bytes(output)
+            return self._recv_network(limit)
+
+        overall_deadline = time.monotonic() + wait
+        got_any = bool(output)
+        idle_deadline = min(overall_deadline, time.monotonic() + idle) if got_any else None
+        while len(output) < limit:
+            now = time.monotonic()
+            deadline = idle_deadline if idle_deadline is not None else overall_deadline
+            remaining_wait = deadline - now
+            if remaining_wait <= 0 or not self._socket_ready(remaining_wait):
+                break
+            data = self._recv_network(limit - len(output))
+            if not data:
+                break
+            output.extend(data)
+            got_any = True
+            idle_deadline = min(overall_deadline, time.monotonic() + idle)
+        return bytes(output)
+
+    def read_until(
+        self,
+        delimiter: bytes,
+        *,
+        max_bytes: int | None = None,
+        wait_seconds: float | None = None,
+    ) -> bytes:
+        """Return through ``delimiter`` while preserving any over-read tail."""
+
+        self._ensure_open()
+        if not isinstance(delimiter, bytes) or not delimiter:
+            raise ValueError("remote TCP delimiter must be non-empty bytes")
+        limit = self._read_limit(max_bytes)
+        wait = self._wait_value(wait_seconds, field_name="wait_seconds", allow_zero=False)
+        deadline = time.monotonic() + wait
+        while True:
+            index = self._pending.find(delimiter)
+            if index >= 0:
+                end = index + len(delimiter)
+                if end > limit:
+                    raise ValueError("remote TCP delimiter exceeds configured read limit")
+                return self._take_pending(end)
+            if len(self._pending) >= limit:
+                raise ValueError("remote TCP delimiter not found within configured read limit")
+            remaining_wait = deadline - time.monotonic()
+            if remaining_wait <= 0 or not self._socket_ready(remaining_wait):
+                raise TimeoutError("remote TCP delimiter was not observed before deadline")
+            data = self._recv_network(limit - len(self._pending))
+            if not data:
+                raise EOFError("remote TCP peer closed before delimiter was observed")
+            self._pending.extend(data)
+
+    def read_exact(self, byte_count: int, *, wait_seconds: float | None = None) -> bytes:
+        """Read exactly ``byte_count`` bytes or fail without discarding partial data."""
+
+        self._ensure_open()
+        limit = self._read_limit(byte_count)
+        wait = self._wait_value(wait_seconds, field_name="wait_seconds", allow_zero=False)
+        deadline = time.monotonic() + wait
+        while len(self._pending) < limit:
+            remaining_wait = deadline - time.monotonic()
+            if remaining_wait <= 0 or not self._socket_ready(remaining_wait):
+                raise TimeoutError("remote TCP exact read did not complete before deadline")
+            data = self._recv_network(limit - len(self._pending))
+            if not data:
+                raise EOFError("remote TCP peer closed before exact read completed")
+            self._pending.extend(data)
+        return self._take_pending(limit)
+
+    def bounded_drain(
+        self,
+        *,
+        wait_seconds: float,
+        max_bytes: int | None = None,
+        idle_grace_seconds: float = 0.05,
+    ) -> bytes:
+        """Accumulate currently arriving response bytes within a strict bound."""
+
+        wait = self._wait_value(wait_seconds, field_name="wait_seconds", allow_zero=False)
+        return self.read(
+            max_bytes,
+            wait_seconds=wait,
+            idle_grace_seconds=idle_grace_seconds,
+        )
 
     def interrupt(self) -> None:
         self._ensure_open()
