@@ -1,45 +1,260 @@
 from __future__ import annotations
+
 import base64
+import json
 from pathlib import Path
-from typing import Sequence
-from harness.core.sandbox import ExecutionResult,IsolationAttestation
-from harness.core.tools import SandboxedArgvToolSpec,SideEffect
-_PROBE_SCRIPT=r'''import base64,hashlib,json,pathlib,subprocess,sys
-exec_path=sys.argv[1];path=pathlib.Path(exec_path);data=base64.b64decode(sys.argv[2],validate=True);timeout=float(sys.argv[3]);target=path.read_bytes();body={"schema_version":1,"kind":"pwn_crash_probe","target_sha256":hashlib.sha256(target).hexdigest(),"input_sha256":hashlib.sha256(data).hexdigest(),"timed_out":False,"returncode":None,"signal":None,"stdout_sha256":None,"stderr_sha256":None}
+from typing import Mapping, Sequence
+
+from harness.core.sandbox import ExecutionResult, IsolationAttestation
+from harness.core.tools import SandboxedArgvToolSpec, SideEffect
+
+from ctf_harness.target.runners import NativeRunner, TargetRunner
+
+
+_PROBE_SCRIPT = r'''import base64,hashlib,json,pathlib,subprocess,sys
+
+def canonical_hash(value):
+    raw=json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(",",":"),default=str).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+def sha_file(path):
+    h=hashlib.sha256()
+    with pathlib.Path(path).open("rb") as f:
+        while True:
+            chunk=f.read(1024*1024)
+            if not chunk: break
+            h.update(chunk)
+    return h.hexdigest()
+
+def tree_fingerprint(root):
+    root=pathlib.Path(root).resolve(strict=True)
+    entries=[]
+    for item in sorted(root.rglob("*"),key=lambda p:p.relative_to(root).as_posix()):
+        rel=item.relative_to(root).as_posix()
+        if item.is_symlink(): raise RuntimeError("runtime tree contains symbolic link: "+rel)
+        if item.is_dir(): continue
+        if not item.is_file(): raise RuntimeError("runtime tree contains non-regular entry: "+rel)
+        entries.append({"path":rel,"sha256":sha_file(item)})
+    return canonical_hash({"files":entries})
+
+target_path=pathlib.Path(sys.argv[1])
+data=base64.b64decode(sys.argv[2],validate=True)
+timeout=float(sys.argv[3])
+launch=json.loads(base64.b64decode(sys.argv[4],validate=True).decode("utf-8"))
+if not isinstance(launch,dict): raise RuntimeError("launch descriptor is not an object")
+expected_target=launch.get("target_sha256")
+if sha_file(target_path)!=expected_target: raise RuntimeError("target identity changed before execution")
+runtime=launch.get("runtime")
+runtime_fingerprint=launch.get("runtime_fingerprint")
+if not isinstance(runtime,dict) or canonical_hash(runtime)!=runtime_fingerprint: raise RuntimeError("runtime descriptor fingerprint mismatch")
+for artifact in runtime.get("runtime_artifacts",[]):
+    role=artifact.get("role");path=artifact.get("path");expected=artifact.get("sha256")
+    if not isinstance(path,str) or not isinstance(expected,str): raise RuntimeError("runtime artifact descriptor malformed")
+    actual=tree_fingerprint(path) if role=="sysroot" else sha_file(path)
+    if actual!=expected: raise RuntimeError("runtime artifact identity changed before execution: "+str(role))
+argv=launch.get("argv")
+if not isinstance(argv,list) or not argv or any(not isinstance(x,str) or not x or "\x00" in x for x in argv): raise RuntimeError("launch argv malformed")
+launch_body={"target_sha256":expected_target,"runtime_fingerprint":runtime_fingerprint,"argv":argv}
+launch_fingerprint=canonical_hash(launch_body)
+if launch_fingerprint!=launch.get("launch_fingerprint"): raise RuntimeError("launch fingerprint mismatch")
+body={"schema_version":2,"kind":"pwn_crash_probe","target_sha256":expected_target,"input_sha256":hashlib.sha256(data).hexdigest(),"runtime":runtime,"runtime_fingerprint":runtime_fingerprint,"launch_argv":argv,"launch_fingerprint":launch_fingerprint,"timed_out":False,"returncode":None,"signal":None,"stdout_sha256":None,"stderr_sha256":None}
 try:
- p=subprocess.run([exec_path],input=data,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=timeout,shell=False);body["returncode"]=p.returncode;body["signal"]=-p.returncode if p.returncode<0 else None;body["stdout_sha256"]=hashlib.sha256(p.stdout).hexdigest();body["stderr_sha256"]=hashlib.sha256(p.stderr).hexdigest()
+    p=subprocess.run(argv,input=data,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=timeout,shell=False)
+    body["returncode"]=p.returncode
+    body["signal"]=-p.returncode if p.returncode<0 else None
+    body["stdout_sha256"]=hashlib.sha256(p.stdout).hexdigest()
+    body["stderr_sha256"]=hashlib.sha256(p.stderr).hexdigest()
 except subprocess.TimeoutExpired as e:
- body["timed_out"]=True;body["stdout_sha256"]=hashlib.sha256(e.stdout or b"").hexdigest();body["stderr_sha256"]=hashlib.sha256(e.stderr or b"").hexdigest()
+    body["timed_out"]=True
+    body["stdout_sha256"]=hashlib.sha256(e.stdout or b"").hexdigest()
+    body["stderr_sha256"]=hashlib.sha256(e.stderr or b"").hexdigest()
 print(json.dumps(body,sort_keys=True,separators=(",",":")))'''
-def _safe_target(workspace:Path,value:str)->str:
- if not isinstance(value,str) or not value.strip():raise ValueError("crash probe target must be a non-empty relative path")
- raw=Path(value)
- if raw.is_absolute():raise ValueError("crash probe target must be workspace-relative")
- unresolved=(workspace/raw).resolve(strict=False)
- try:unresolved.relative_to(workspace)
- except ValueError as exc:raise ValueError("crash probe target escapes workspace") from exc
- resolved=(workspace/raw).resolve(strict=True)
- try:resolved.relative_to(workspace)
- except ValueError as exc:raise ValueError("crash probe target escapes workspace") from exc
- if not resolved.is_file():raise ValueError("crash probe target must be a regular file")
- return str(resolved.relative_to(workspace))
+
+
+def _safe_target(workspace: Path, value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("crash probe target must be a non-empty relative path")
+    raw = Path(value)
+    if raw.is_absolute():
+        raise ValueError("crash probe target must be workspace-relative")
+    unresolved = (workspace / raw).resolve(strict=False)
+    try:
+        unresolved.relative_to(workspace)
+    except ValueError as exc:
+        raise ValueError("crash probe target escapes workspace") from exc
+    resolved = (workspace / raw).resolve(strict=True)
+    try:
+        resolved.relative_to(workspace)
+    except ValueError as exc:
+        raise ValueError("crash probe target escapes workspace") from exc
+    if not resolved.is_file():
+        raise ValueError("crash probe target must be a regular file")
+    return str(resolved.relative_to(workspace))
+
+
 class CrashProbeBackend:
- name="ctf_pwn_crash_probe"
- def __init__(self,delegate,*,probe_timeout_seconds:float=2.0):
-  self.delegate=delegate;self.probe_timeout_seconds=float(probe_timeout_seconds)
-  if self.probe_timeout_seconds<=0:raise ValueError("probe timeout must be positive")
- def isolation_attestation(self,*,workspace:Path)->IsolationAttestation:
-  a=self.delegate.isolation_attestation(workspace=workspace);e=dict(a.evidence);e.update({"semantic_adapter":self.name,"delegate_backend":getattr(self.delegate,"name",type(self.delegate).__name__)});return IsolationAttestation(a.filesystem_isolated,a.network_isolated,a.environment_sanitized,a.source,e)
- def run_argv(self,*,workspace:Path,argv:Sequence[str],timeout_seconds:float,env=None)->ExecutionResult:
-  request=list(argv)
-  if len(request)!=2:return ExecutionResult(2,"","crash probe request must contain target and input_b64")
-  root=Path(workspace).resolve()
-  try:target=_safe_target(root,request[0]);raw=base64.b64decode(request[1],validate=True)
-  except Exception as exc:return ExecutionResult(2,"",f"invalid crash probe request: {type(exc).__name__}: {exc}")
-  helper=["/usr/bin/python3","-c",_PROBE_SCRIPT,f"./{target}",base64.b64encode(raw).decode("ascii"),repr(self.probe_timeout_seconds)]
-  return self.delegate.run_argv(workspace=root,argv=helper,timeout_seconds=max(float(timeout_seconds),self.probe_timeout_seconds+1.0),env=env)
- def run_shell(self,**kwargs):raise RuntimeError("CrashProbeBackend does not expose arbitrary shell execution")
- def open_argv_session(self,**kwargs):raise RuntimeError("CrashProbeBackend does not expose persistent sessions")
-def make_crash_probe_tool(workspace:str|Path,*,backend,timeout_seconds:float=5.0,probe_timeout_seconds:float=2.0)->SandboxedArgvToolSpec:
- adapter=CrashProbeBackend(backend,probe_timeout_seconds=probe_timeout_seconds)
- return SandboxedArgvToolSpec(name="pwn_crash_probe",description="Run a fixed sandboxed crash probe for [workspace-relative target, base64 input].",execution_backend=adapter,execution_workspace=Path(workspace).resolve(),timeout_seconds=timeout_seconds,argv_arg="argv",side_effect=SideEffect.WRITE,idempotent=False,failure_modes=["invalid_target","invalid_input","probe_timeout","sandbox_violation"],provenance={"kind":"deterministic_domain_probe","domain":"pwn","schema":"pwn_crash_probe.v1"},require_zero_exit=True)
+    name = "ctf_pwn_crash_probe"
+
+    def __init__(
+        self,
+        delegate,
+        *,
+        probe_timeout_seconds: float = 2.0,
+        runners: Mapping[str, TargetRunner] | None = None,
+        default_profile_id: str = "native-default",
+        expected_target_sha256: Mapping[str, str] | None = None,
+    ):
+        self.delegate = delegate
+        self.probe_timeout_seconds = float(probe_timeout_seconds)
+        if self.probe_timeout_seconds <= 0:
+            raise ValueError("probe timeout must be positive")
+        configured = dict(runners or {"native-default": NativeRunner("native-default")})
+        if not configured:
+            raise ValueError("at least one target runner is required")
+        for key, runner in configured.items():
+            if not isinstance(key, str) or not key.strip():
+                raise ValueError("runner profile keys must be non-empty strings")
+            if getattr(runner, "profile_id", None) != key:
+                raise ValueError("runner registry key must equal runner.profile_id")
+        if default_profile_id not in configured:
+            raise ValueError("default target runner profile is not registered")
+        self.runners = configured
+        self.default_profile_id = default_profile_id
+        self.expected_target_sha256 = dict(expected_target_sha256 or {})
+
+    def isolation_attestation(self, *, workspace: Path) -> IsolationAttestation:
+        attestation = self.delegate.isolation_attestation(workspace=workspace)
+        evidence = dict(attestation.evidence)
+        evidence.update(
+            {
+                "semantic_adapter": self.name,
+                "delegate_backend": getattr(self.delegate, "name", type(self.delegate).__name__),
+                "target_runner_profiles": sorted(self.runners),
+            }
+        )
+        return IsolationAttestation(
+            attestation.filesystem_isolated,
+            attestation.network_isolated,
+            attestation.environment_sanitized,
+            attestation.source,
+            evidence,
+        )
+
+    def run_argv(
+        self,
+        *,
+        workspace: Path,
+        argv: Sequence[str],
+        timeout_seconds: float,
+        env=None,
+    ) -> ExecutionResult:
+        request = list(argv)
+        if len(request) not in (2, 3):
+            return ExecutionResult(
+                2,
+                "",
+                "crash probe request must contain target, input_b64, and optional runtime_profile_id",
+            )
+        root = Path(workspace).resolve()
+        try:
+            target = _safe_target(root, request[0])
+            raw = base64.b64decode(request[1], validate=True)
+            profile_id = request[2] if len(request) == 3 else self.default_profile_id
+            if profile_id not in self.runners:
+                raise ValueError("requested target runtime profile is not registered")
+            runner = self.runners[profile_id]
+            expected = self.expected_target_sha256.get(target)
+            launch = runner.build_launch(
+                workspace=root,
+                target_relpath=target,
+                expected_target_sha256=expected,
+            )
+            launch_payload = {
+                "target_sha256": launch.target_sha256,
+                "runtime": launch.runtime_descriptor(),
+                "runtime_fingerprint": launch.runtime_fingerprint(),
+                "argv": list(launch.argv),
+                "launch_fingerprint": launch.launch_fingerprint(),
+            }
+        except Exception as exc:
+            return ExecutionResult(
+                2,
+                "",
+                f"invalid crash probe request: {type(exc).__name__}: {exc}",
+            )
+
+        encoded_launch = base64.b64encode(
+            json.dumps(
+                launch_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).decode("ascii")
+        helper = [
+            "/usr/bin/python3",
+            "-c",
+            _PROBE_SCRIPT,
+            f"./{target}",
+            base64.b64encode(raw).decode("ascii"),
+            repr(self.probe_timeout_seconds),
+            encoded_launch,
+        ]
+        return self.delegate.run_argv(
+            workspace=root,
+            argv=helper,
+            timeout_seconds=max(float(timeout_seconds), self.probe_timeout_seconds + 1.0),
+            env=env,
+        )
+
+    def run_shell(self, **kwargs):
+        raise RuntimeError("CrashProbeBackend does not expose arbitrary shell execution")
+
+    def open_argv_session(self, **kwargs):
+        raise RuntimeError("CrashProbeBackend does not expose persistent sessions")
+
+
+def make_crash_probe_tool(
+    workspace: str | Path,
+    *,
+    backend,
+    timeout_seconds: float = 5.0,
+    probe_timeout_seconds: float = 2.0,
+    runners: Mapping[str, TargetRunner] | None = None,
+    default_profile_id: str = "native-default",
+    expected_target_sha256: Mapping[str, str] | None = None,
+) -> SandboxedArgvToolSpec:
+    adapter = CrashProbeBackend(
+        backend,
+        probe_timeout_seconds=probe_timeout_seconds,
+        runners=runners,
+        default_profile_id=default_profile_id,
+        expected_target_sha256=expected_target_sha256,
+    )
+    return SandboxedArgvToolSpec(
+        name="pwn_crash_probe",
+        description=(
+            "Run a fixed sandboxed crash probe for "
+            "[workspace-relative target, base64 input, optional registered runtime profile]."
+        ),
+        execution_backend=adapter,
+        execution_workspace=Path(workspace).resolve(),
+        timeout_seconds=timeout_seconds,
+        argv_arg="argv",
+        side_effect=SideEffect.WRITE,
+        idempotent=False,
+        failure_modes=[
+            "invalid_target",
+            "invalid_input",
+            "invalid_runtime_profile",
+            "runtime_identity_mismatch",
+            "probe_timeout",
+            "sandbox_violation",
+        ],
+        provenance={
+            "kind": "deterministic_domain_probe",
+            "domain": "pwn",
+            "schema": "pwn_crash_probe.v2",
+        },
+        require_zero_exit=True,
+    )
