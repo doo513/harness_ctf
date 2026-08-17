@@ -130,6 +130,13 @@ def test_credential_ref_rejects_untyped_kind() -> None:
         CredentialRef("env", "CTF_TOKEN")
 
 
+def test_remote_target_rejects_credentials_or_tokens_embedded_in_endpoint() -> None:
+    with pytest.raises(ValueError, match="embedded credentials"):
+        RemoteTargetSpec("tcp://user:secret@challenge.example:31337", RemoteTransport.TCP)
+    with pytest.raises(ValueError, match="path/query/fragment"):
+        RemoteTargetSpec("tcp://challenge.example:31337/?token=secret", RemoteTransport.TCP)
+
+
 def test_local_solve_binds_target_to_admitted_artifact() -> None:
     spec = _local_solve()
 
