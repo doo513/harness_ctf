@@ -24,6 +24,7 @@ from ctf_harness.proof.models import ProofLevel
 
 
 RUNNER = "sha256:" + "a" * 64
+RUN_EVIDENCE_SHA = "c" * 64
 
 
 def _case(*, mode="research"):
@@ -119,10 +120,11 @@ def _outcome(**changes):
 
 
 class FakeExecutor:
-    def __init__(self, descriptor, outcome=None, *, receipt_executor_id=None):
+    def __init__(self, descriptor, outcome=None, *, receipt_executor_id=None, receipt_run_id=None):
         self._descriptor = descriptor
         self.outcome = outcome or _outcome()
         self.receipt_executor_id = receipt_executor_id or descriptor.executor_id
+        self.receipt_run_id = receipt_run_id
         self.calls = 0
 
     def descriptor(self):
@@ -132,14 +134,17 @@ class FakeExecutor:
         self.calls += 1
         return ExecutorRunReceipt(
             executor_id=self.receipt_executor_id,
-            run_evidence_sha256="c" * 64,
+            run_id=self.receipt_run_id or spec.run_id(),
+            run_evidence_sha256=RUN_EVIDENCE_SHA,
             outcome=self.outcome,
         )
 
 
 class FakeAdjudicator:
-    def __init__(self, *, accepted=False):
+    def __init__(self, *, accepted=False, override_run_id=None, override_run_evidence=None):
         self.accepted = accepted
+        self.override_run_id = override_run_id
+        self.override_run_evidence = override_run_evidence
         self.calls = 0
         self.run_evidence_seen = None
 
@@ -149,6 +154,8 @@ class FakeAdjudicator:
         return IndependentAdjudication(
             adjudicator_id="fixture-independent-adjudicator",
             evidence_sha256="d" * 64,
+            run_id=self.override_run_id or spec.run_id(),
+            run_evidence_sha256=self.override_run_evidence or run_evidence_sha256,
             oracle_accepted=self.accepted,
             highest_proof_level=(ProofLevel.P6_ACCEPTED if self.accepted else ProofLevel.P2_CONTROL),
         )
@@ -167,12 +174,13 @@ def test_valid_research_run_requires_attested_boundary_and_preserves_evidence_ch
         adjudicator=adjudicator,
     )
     assert executor.calls == 1 and adjudicator.calls == 1
-    assert adjudicator.run_evidence_seen == "c" * 64
+    assert adjudicator.run_evidence_seen == RUN_EVIDENCE_SHA
+    assert record.run_id == spec.run_id()
     assert record.executor_id == descriptor.executor_id
     assert record.executor_fingerprint == descriptor.fingerprint()
     assert record.boundary_attestor_id == "fixture-boundary-attestor"
     assert record.boundary_evidence_sha256 == "b" * 64
-    assert record.run_evidence_sha256 == "c" * 64
+    assert record.run_evidence_sha256 == RUN_EVIDENCE_SHA
     assert record.adjudicator_id == "fixture-independent-adjudicator"
     assert not record.success
     assert record.false_completion
@@ -193,17 +201,24 @@ def test_executor_contract_mismatch_blocks_before_execute(descriptor):
     adjudicator = FakeAdjudicator()
     with pytest.raises(ValueError, match="executor differs"):
         execute_planned_run(
-            plan=plan, spec=spec, executor=executor,
-            boundary_attestation=_attestation(descriptor), adjudicator=adjudicator,
+            plan=plan,
+            spec=spec,
+            executor=executor,
+            boundary_attestation=_attestation(descriptor),
+            adjudicator=adjudicator,
         )
     assert executor.calls == 0 and adjudicator.calls == 0
 
 
 def test_wrong_boundary_fingerprint_blocks_before_execute():
-    plan, spec, _ = _plan(); descriptor = _descriptor(); executor = FakeExecutor(descriptor)
+    plan, spec, _ = _plan()
+    descriptor = _descriptor()
+    executor = FakeExecutor(descriptor)
     with pytest.raises(ValueError, match="different executor descriptor"):
         execute_planned_run(
-            plan=plan, spec=spec, executor=executor,
+            plan=plan,
+            spec=spec,
+            executor=executor,
             boundary_attestation=_attestation(descriptor, executor_fingerprint="e" * 64),
             adjudicator=FakeAdjudicator(),
         )
@@ -215,16 +230,23 @@ def test_wrong_boundary_fingerprint_blocks_before_execute():
     [
         (_descriptor(web_search_enabled=True), "web-search blocking"),
         (_descriptor(external_retrieval_enabled=True), "external-retrieval blocking"),
-        (_descriptor(general_internet_egress_enabled=True, challenge_transport_only=False), "general-internet egress blocking"),
+        (
+            _descriptor(general_internet_egress_enabled=True, challenge_transport_only=False),
+            "general-internet egress blocking",
+        ),
         (_descriptor(challenge_transport_only=False), "scoped to challenge transport"),
     ],
 )
 def test_research_boundary_capabilities_block_before_execute(descriptor, error):
-    plan, spec, _ = _plan(); executor = FakeExecutor(descriptor)
+    plan, spec, _ = _plan()
+    executor = FakeExecutor(descriptor)
     with pytest.raises(ValueError, match=error):
         execute_planned_run(
-            plan=plan, spec=spec, executor=executor,
-            boundary_attestation=_attestation(descriptor), adjudicator=FakeAdjudicator(),
+            plan=plan,
+            spec=spec,
+            executor=executor,
+            boundary_attestation=_attestation(descriptor),
+            adjudicator=FakeAdjudicator(),
         )
     assert executor.calls == 0
 
@@ -239,34 +261,86 @@ def test_research_boundary_capabilities_block_before_execute(descriptor, error):
     ],
 )
 def test_budget_violation_blocks_before_adjudication(outcome, error):
-    plan, spec, _ = _plan(); descriptor = _descriptor(); executor = FakeExecutor(descriptor, outcome)
+    plan, spec, _ = _plan()
+    descriptor = _descriptor()
+    executor = FakeExecutor(descriptor, outcome)
     adjudicator = FakeAdjudicator()
     with pytest.raises(ValueError, match=error):
         execute_planned_run(
-            plan=plan, spec=spec, executor=executor,
-            boundary_attestation=_attestation(descriptor), adjudicator=adjudicator,
+            plan=plan,
+            spec=spec,
+            executor=executor,
+            boundary_attestation=_attestation(descriptor),
+            adjudicator=adjudicator,
         )
     assert executor.calls == 1 and adjudicator.calls == 0
 
 
 def test_wrong_receipt_executor_identity_rejected_before_adjudication():
-    plan, spec, _ = _plan(); descriptor = _descriptor()
-    executor = FakeExecutor(descriptor, receipt_executor_id="different-executor"); adjudicator = FakeAdjudicator()
+    plan, spec, _ = _plan()
+    descriptor = _descriptor()
+    executor = FakeExecutor(descriptor, receipt_executor_id="different-executor")
+    adjudicator = FakeAdjudicator()
     with pytest.raises(ValueError, match="receipt identity"):
         execute_planned_run(
-            plan=plan, spec=spec, executor=executor,
-            boundary_attestation=_attestation(descriptor), adjudicator=adjudicator,
+            plan=plan,
+            spec=spec,
+            executor=executor,
+            boundary_attestation=_attestation(descriptor),
+            adjudicator=adjudicator,
         )
     assert executor.calls == 1 and adjudicator.calls == 0
 
 
+def test_wrong_receipt_run_id_rejected_before_adjudication():
+    plan, spec, _ = _plan()
+    descriptor = _descriptor()
+    executor = FakeExecutor(descriptor, receipt_run_id="e" * 64)
+    adjudicator = FakeAdjudicator()
+    with pytest.raises(ValueError, match="different benchmark run"):
+        execute_planned_run(
+            plan=plan,
+            spec=spec,
+            executor=executor,
+            boundary_attestation=_attestation(descriptor),
+            adjudicator=adjudicator,
+        )
+    assert executor.calls == 1 and adjudicator.calls == 0
+
+
+def test_wrong_adjudication_run_binding_is_rejected():
+    plan, spec, _ = _plan()
+    descriptor = _descriptor()
+    with pytest.raises(ValueError, match="different benchmark run"):
+        execute_planned_run(
+            plan=plan,
+            spec=spec,
+            executor=FakeExecutor(descriptor),
+            boundary_attestation=_attestation(descriptor),
+            adjudicator=FakeAdjudicator(override_run_id="e" * 64),
+        )
+    with pytest.raises(ValueError, match="different run evidence"):
+        execute_planned_run(
+            plan=plan,
+            spec=spec,
+            executor=FakeExecutor(descriptor),
+            boundary_attestation=_attestation(descriptor),
+            adjudicator=FakeAdjudicator(override_run_evidence="f" * 64),
+        )
+
+
 def test_unplanned_spec_is_rejected_before_executor_call():
-    plan, _, verified = _plan(); descriptor = _descriptor(); executor = FakeExecutor(descriptor)
+    plan, _, verified = _plan()
+    descriptor = _descriptor()
+    executor = FakeExecutor(descriptor)
     unplanned = replace(verified, repeat_index=1)
     with pytest.raises(ValueError, match="not present"):
         execute_planned_run(
-            plan=plan, spec=unplanned, executor=executor,
-            boundary_attestation=_attestation(descriptor), adjudicator=FakeAdjudicator(),
+            plan=plan,
+            spec=unplanned,
+            executor=executor,
+            boundary_attestation=_attestation(descriptor),
+            adjudicator=FakeAdjudicator(),
         )
     assert executor.calls == 0
 
@@ -279,10 +353,14 @@ def test_competition_mode_can_declare_open_internet_when_attestation_matches():
         general_internet_egress_enabled=True,
         challenge_transport_only=False,
     )
-    executor = FakeExecutor(descriptor); adjudicator = FakeAdjudicator(accepted=True)
+    executor = FakeExecutor(descriptor)
+    adjudicator = FakeAdjudicator(accepted=True)
     record = execute_planned_run(
-        plan=plan, spec=spec, executor=executor,
-        boundary_attestation=_attestation(descriptor), adjudicator=adjudicator,
+        plan=plan,
+        spec=spec,
+        executor=executor,
+        boundary_attestation=_attestation(descriptor),
+        adjudicator=adjudicator,
     )
     assert record.mode is EvaluationMode.COMPETITION
     assert record.success
