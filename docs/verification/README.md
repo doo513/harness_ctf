@@ -2,14 +2,14 @@
 
 Latest implementation code gate:
 
-- CTF code commit: `c9b6b34ec2499232cdcf9dfb38ad8379bd0aed75`
+- CTF code commit: `4b17413b761268e4dcfb0ae5b3d87c5f62b493c0`
 - Pinned Base: `doo513/base_harness@75834ac1ecb6c022771c2efee1f19495f356ee76`
-- GitHub Actions run: `32054864672` — `success`
+- GitHub Actions run: `32056829487` — `success`
 - Base regression: `220 passed, 7 skipped`
-- CTF regression: `135 passed in 5.59s`
-- preserved CTF pytest artifact: `9296044612`, SHA-256 `d6453dd93b823f665f88b13dc5d5e65e7019da4276ab30db312b40d1ec93e2a2`
+- CTF regression: `154 passed in 7.29s`
+- preserved CTF pytest artifact: `9296690377`, SHA-256 `708f6509c6068a34cb7f8ff7f8ead4ade27decfe03cc5a16d3058ebaf51720f0`
 
-The same full gate passed Base invariants, runtime-bound native P1, controlled QEMU-user AArch64 P1, delayed/over-read operational TCP transport, runtime-bound native x86_64 P2, sealed runtime-bound P3, P4–P6, WP06/WP07, and all existing WP08 evaluation probes.
+The same full gate passed Base invariants, the controlled Agent foundation probe, runtime-bound native P1, controlled QEMU-user AArch64 P1, delayed/over-read operational TCP transport, runtime-bound native x86_64 P2, sealed runtime-bound P3, P4–P6, WP06/WP07, and all existing WP08 evaluation probes.
 
 | Work package | Status | Report |
 |---|---|---|
@@ -27,6 +27,7 @@ The same full gate passed Base invariants, runtime-bound native P1, controlled Q
 | WP10 Operational Solve Contracts | PASS | `WP10_OPERATIONAL_SOLVE_CONTRACT_VERIFICATION.md` |
 | WP11 Target Execution Layer | PASS — execution boundary stabilized | `WP11_TARGET_EXECUTION_VERIFICATION.md` |
 | WP11 Stage 0 Review | PASS | `WP11_STAGE0_EXECUTION_BOUNDARY_VERIFICATION.md` |
+| WP12 Agent Foundation | PASS — controlled authority/orchestration boundary | `WP12_AGENT_FOUNDATION_VERIFICATION.md` |
 
 ## Status semantics
 
@@ -46,7 +47,6 @@ For WP09:
 ```text
 Base package/lock/CI provenance = consistent
 temporary acquisition/probe workflows = removed
-operational model-driven solver = NOT YET ESTABLISHED
 ```
 
 For WP10:
@@ -71,26 +71,64 @@ AArch64 P2 = UNSUPPORTED / later semantic work
 full-system/VM provider = NOT IMPLEMENTED / add only when a real case requires it
 ```
 
+For WP12:
+
+```text
+Base ContextProjector / Decision / LLMController reused = PASS
+RunIntent / TerminationPolicy fingerprint-bound = PASS
+SMOKE actor complete = durable incomplete stop, never success
+SOLVE / COMPETITION actor complete = external oracle only
+missing capability = incomplete stop or existing Base recovery
+CTF hypotheses = untrusted speculation, never Fact authority
+untrusted durable stop text = bounded preview + digest
+model CTF metadata = bounded before runtime dispatch
+production LLM executed = NO
+actual end-to-end CTF solve = OPEN
+```
+
 No report uses code existence, synthetic fixtures, self-reported completion, or documentation text alone as proof of CTF effectiveness.
 
-## Stage 0 failure history
+## Preserved failure history
 
-The first strengthened WP11 gate, run `32054672074`, failed after Base and CTF regressions because the controlled QEMU P1 fixture still supplied the legacy fact candidate shape. Actual QEMU execution and SIGSEGV observation succeeded. The fixture was updated to bind the production schema v2 runtime/launch identity, and the full gate then passed at run `32054864672`.
+WP11 Stage 0 red gate:
 
-The red gate remains recorded in `WP11_STAGE0_EXECUTION_BOUNDARY_VERIFICATION.md`.
+```text
+run 32054672074
+controlled QEMU P1 fixture omitted strengthened runtime/launch fact identity
+actual QEMU execution and SIGSEGV observation succeeded
+classification = fixture lag after production fact-contract strengthening
+```
+
+The failure and remediation remain recorded in `WP11_STAGE0_EXECUTION_BOUNDARY_VERIFICATION.md`.
+
+## Agent Foundation meta-review
+
+The WP12 implementation was re-reviewed after its first green gate. The review found and fixed two additional boundary issues before declaring the stage complete:
+
+1. actor/model stop reason and missing-capability subject were initially stored as unbounded raw text in durable hash-chained control events;
+2. CTF-specific model hypothesis metadata had shape validation but lacked explicit size bounds.
+
+Final code gate `32056829487` includes both remediations. Full findings are recorded in `../implementation/WP12_AGENT_FOUNDATION_REVIEW_FINDINGS.md`.
 
 ## Current next evidence gate
 
-Execution is now sufficiently stable to begin the **Agent Foundation** without making SolveEngine wiring a circular WP11 prerequisite.
+The next dependency-safe engineering stage is **WP13 SolveSpec-to-runtime binding / minimal SolveEngine**.
 
-Next dependency-driven sequence:
+Required invariants:
 
-1. define `RunIntent` / `TerminationPolicy` without giving them completion authority;
-2. build CTF model context as a projection over the existing Base context/state authority;
-3. expose a minimal capability catalog describing only Harness-owned actions available to the model;
-4. define typed model decisions and a Harness-owned AgentController boundary;
-5. execute Gate A0 proving model/controller decisions cannot directly mutate facts, proof, or completion;
-6. then build the minimal SolveEngine vertical slice;
-7. only after a real model-driven solve loop exists, run fresh/private Minimal-vs-Verified effectiveness evaluation.
+```text
+SolveSpec identity
+  run_intent
+  termination_policy
+  budget
+  challenge/target identity
+  agent identity
+        ↓ exact binding / mismatch rejection
+AgentCTFRuntime + Base Budget + prepared profile/controller
+```
 
-A smoke stop, budget stop, unsupported-capability stop, or controller self-report must never set `state.completed=True`. Final completion remains External Oracle authority.
+SolveEngine must remain orchestration only. It may not write verified facts, proof state, or completion.
+
+A production-model empirical Gate A0 remains separately OPEN because the controlled WP12 probe uses a deterministic ModelAdapter fixture. No production provider/credential has been supplied or attested, so actual LLM execution and solve effectiveness must not be inferred from WP12.
+
+After the minimal SolveEngine boundary is implemented and verified, the first controlled native x86_64 end-to-end vertical slice should be used to expose orchestration defects before DomainPlaybook, AnalysisSandbox, CompetitionAdapter, or additional runtime providers are added.
