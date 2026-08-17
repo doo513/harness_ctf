@@ -97,12 +97,14 @@ class ExecutionBoundaryAttestation:
 @dataclass(frozen=True)
 class ExecutorRunReceipt:
     executor_id: str
+    run_id: str
     run_evidence_sha256: str
     outcome: RawRunOutcome
 
     def __post_init__(self) -> None:
         if not isinstance(self.executor_id, str) or not self.executor_id.strip():
             raise ValueError("executor receipt executor_id must be a non-empty string")
+        _require_sha256(self.run_id, field="executor receipt run_id")
         _require_sha256(self.run_evidence_sha256, field="run_evidence_sha256")
         if not isinstance(self.outcome, RawRunOutcome):
             raise ValueError("executor receipt outcome must be RawRunOutcome")
@@ -214,6 +216,8 @@ def execute_planned_run(
         raise ValueError("executor must return ExecutorRunReceipt")
     if receipt.executor_id != descriptor.executor_id:
         raise ValueError("executor receipt identity differs from validated executor")
+    if receipt.run_id != spec.run_id():
+        raise ValueError("executor receipt is bound to a different benchmark run")
     _validate_outcome_budget(spec, receipt.outcome)
 
     adjudication = adjudicator.adjudicate(
