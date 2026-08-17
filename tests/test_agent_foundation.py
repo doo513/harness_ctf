@@ -63,6 +63,10 @@ def _propose() -> dict:
     }
 
 
+def _never_accept(*, goal, state, workspace):
+    return False
+
+
 def _runtime(
     root: Path,
     model: SequenceModel,
@@ -71,11 +75,12 @@ def _runtime(
     backend: RecordingIsolatedTestBackend | None = None,
     oracle=None,
     termination_policy: TerminationPolicy | None = None,
+    resume: bool = False,
 ) -> AgentCTFRuntime:
     workspace = root / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     backend = backend or RecordingIsolatedTestBackend()
-    return AgentCTFRuntime(
+    kwargs = dict(
         run_intent=intent,
         termination_policy=termination_policy,
         goal=GoalContract(
@@ -85,11 +90,12 @@ def _runtime(
         profile=VerifiedCTFProfile(
             workspace=workspace,
             execution_backend=backend,
-            external_oracle=oracle or (lambda *, goal, state, workspace: False),
+            external_oracle=oracle or _never_accept,
         ),
         controller=CTFLLMController(model),
         run_dir=root / "run",
     )
+    return AgentCTFRuntime.resume(**kwargs) if resume else AgentCTFRuntime(**kwargs)
 
 
 def test_smoke_actor_complete_halts_incomplete_without_oracle(tmp_path: Path) -> None:
@@ -119,6 +125,28 @@ def test_smoke_actor_complete_halts_incomplete_without_oracle(tmp_path: Path) ->
     assert len(hypotheses) == 1
     assert hypotheses[0]["trust"] == "untrusted_speculation"
     assert hypotheses[0]["instruction_authority"] == "none"
+
+
+def test_smoke_stop_is_durable_and_resume_does_not_call_model_or_oracle(tmp_path: Path) -> None:
+    first_model = SequenceModel([_complete("durable smoke stop")])
+    runtime = _runtime(tmp_path, first_model, intent=RunIntent.SMOKE, oracle=_never_accept)
+    state = runtime.run()
+    assert runtime.halted and not state.completed
+
+    resumed_model = SequenceModel([_complete("must not be consumed")])
+    resumed = _runtime(
+        tmp_path,
+        resumed_model,
+        intent=RunIntent.SMOKE,
+        oracle=_never_accept,
+        resume=True,
+    )
+    resumed_state = resumed.run()
+    assert resumed.halted
+    assert not resumed_state.completed
+    assert not resumed_state.completion_requested
+    assert resumed_model.calls == []
+    assert resumed.metrics["oracle_checks"] == 0
 
 
 def test_solve_actor_complete_still_requires_external_oracle(tmp_path: Path) -> None:
