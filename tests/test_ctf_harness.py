@@ -21,6 +21,7 @@ from ctf_harness.hypotheses.models import Hypothesis,HypothesisStatus
 from ctf_harness.hypotheses.pool import HypothesisPool,fingerprint
 from ctf_harness.recovery.adapter import map_failure
 from ctf_harness.progress.pwn import pwn_progress_snapshot
+from harness.core.failures import FailureKind
 RUNNER="sha256:"+"a"*64
 
 def root(): return Path(__file__).resolve().parents[1]
@@ -62,7 +63,7 @@ def test_wp06_dedupe_stable_identity_and_evidence_state():
  assert p.guard(fp,action_digest="a"*64,evidence_state_digest="ev2").allowed
  p.mark_refuted(fp);assert h.status==HypothesisStatus.REFUTED;assert not p.guard(fp,action_digest="a"*64,evidence_state_digest="ev2").allowed
 def test_wp07_recovery_progress():
- assert map_failure("ENVIRONMENT_MISMATCH").core_failure=="ENV_ERROR" and map_failure("FLAG_REJECTED").target=="return_to_proof"
+ assert map_failure("ENVIRONMENT_MISMATCH").core_failure is FailureKind.ENV_ERROR and map_failure("FLAG_REJECTED").target=="return_to_proof"
  with pytest.raises(ValueError):map_failure("UNKNOWN")
  assert pwn_progress_snapshot(["ctf.pwn.arch","ctf.pwn.remote_behavior"])=={"milestones":["artifact_profiled","remote_behavior_verified"],"score":2.0};assert pwn_progress_snapshot([],completed=True)=={"milestones":["flag_accepted"],"score":1.0}
 def test_wp02_profile_uses_exact_upstream_runtime(tmp_path):
