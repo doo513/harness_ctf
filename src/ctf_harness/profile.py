@@ -3,6 +3,8 @@ from harness.core.tools import SideEffect, ToolSpec, make_argv_tool, make_sessio
 from harness.core.verification import VerificationContract, VerificationLevel, VerificationRequirement
 from harness.profiles.ctf import CTFProfile
 from ctf_harness.claims.pwn import PWN_CLAIM_SPECS
+from ctf_harness.domains.pwn import PwnPlaybook
+from ctf_harness.domains.registry import DomainRegistry
 from ctf_harness.progress.pwn import pwn_progress_snapshot
 from ctf_harness.target.runners import NativeRunner, TargetRunner
 from ctf_harness.tools.recon import make_pwn_recon_handler
@@ -32,6 +34,8 @@ class VerifiedCTFProfile(CTFProfile):
         target_runners: dict[str, TargetRunner] | None = None,
         default_target_profile_id: str = "native-default",
         expected_target_sha256: dict[str, str] | None = None,
+        domain_registry: DomainRegistry | None = None,
+        active_domains: tuple[str, ...] = ("pwn",),
     ):
         super().__init__(workspace=workspace, external_oracle=external_oracle, execution_backend=execution_backend)
         self.flag_completion_oracle = flag_completion_oracle
@@ -48,6 +52,18 @@ class VerifiedCTFProfile(CTFProfile):
         self.target_runners = configured
         self.default_target_profile_id = default_target_profile_id
         self.expected_target_sha256 = dict(expected_target_sha256 or {})
+
+        registry = domain_registry or DomainRegistry((PwnPlaybook(),))
+        if not isinstance(registry, DomainRegistry):
+            raise ValueError("domain_registry must be DomainRegistry")
+        if not isinstance(active_domains, tuple) or not active_domains:
+            raise ValueError("active_domains must be a non-empty tuple")
+        if len(set(active_domains)) != len(active_domains):
+            raise ValueError("active_domains must be unique")
+        for domain in active_domains:
+            registry.require(domain)
+        self.domain_registry = registry
+        self.active_domains = active_domains
 
     def tools(self):
         tools = super().tools()
