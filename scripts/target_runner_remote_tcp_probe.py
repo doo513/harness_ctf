@@ -5,12 +5,20 @@ import json
 import socket
 import threading
 
-from ctf_harness.operational.models import NetworkPolicy, RemoteTargetSpec, RemoteTransport
+from ctf_harness.manifest.models import ChallengeManifest
+from ctf_harness.operational.models import (
+    NetworkPolicy,
+    OperationalChallengeRef,
+    RemoteTargetSpec,
+    RemoteTransport,
+)
 from ctf_harness.target.remote import RemoteTcpRunner
 
 
 REQUEST = b"TARGET_RUNNER_PING_513\n"
 RESPONSE = b"TARGET_RUNNER_PONG_513\n"
+ARTIFACT_SHA = "a" * 64
+RUNNER_DIGEST = "sha256:" + "f" * 64
 
 
 def _serve(listener: socket.socket, errors: list[str]) -> None:
@@ -27,6 +35,25 @@ def _serve(listener: socket.socket, errors: list[str]) -> None:
         listener.close()
 
 
+def _challenge(endpoint: str) -> OperationalChallengeRef:
+    manifest = ChallengeManifest(
+        challenge_id="controlled-remote-runner",
+        event="controlled",
+        description="WP11 remote transport probe",
+        artifact_refs=("chal",),
+        remote_endpoints=(endpoint,),
+        category_hint="pwn",
+        flag_format="flag{...}",
+        allowed_network=True,
+        allowed_tools=("remote_tcp",),
+        runner_image_digest=RUNNER_DIGEST,
+        challenge_revision="r1",
+        oracle_type="external",
+        benchmark_policy="research",
+    )
+    return OperationalChallengeRef.from_manifest(manifest, {"chal": ARTIFACT_SHA})
+
+
 def main() -> int:
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -37,16 +64,16 @@ def main() -> int:
     thread = threading.Thread(target=_serve, args=(listener, errors), daemon=True)
     thread.start()
 
-    target = RemoteTargetSpec(
-        endpoint=f"tcp://127.0.0.1:{port}",
-        transport=RemoteTransport.TCP,
-    )
+    endpoint = f"tcp://127.0.0.1:{port}"
+    challenge = _challenge(endpoint)
+    target = RemoteTargetSpec(endpoint=endpoint, transport=RemoteTransport.TCP)
     policy = NetworkPolicy(
         challenge_transport=True,
         general_internet=False,
         external_retrieval=False,
     )
     runner = RemoteTcpRunner(
+        challenge,
         target,
         network_policy=policy,
         timeout_seconds=2.0,
@@ -56,6 +83,7 @@ def main() -> int:
     assert runner.pinned_ips == ("127.0.0.1",)
     assert runner.describe()["general_internet"] is False
     assert runner.describe()["external_retrieval"] is False
+    assert runner.describe()["challenge_manifest_fingerprint"] == challenge.manifest_fingerprint
 
     session = runner.open_session()
     session.send(REQUEST)
@@ -67,6 +95,7 @@ def main() -> int:
     assert not thread.is_alive()
     assert not errors, errors
     assert receipt.closed
+    assert receipt.challenge_manifest_fingerprint == challenge.manifest_fingerprint
     assert receipt.sent_sha256 == hashlib.sha256(REQUEST).hexdigest()
     assert receipt.received_sha256 == hashlib.sha256(RESPONSE).hexdigest()
     serialized_receipt = json.dumps(receipt.descriptor(), sort_keys=True)
@@ -76,6 +105,7 @@ def main() -> int:
     blocked = False
     try:
         RemoteTcpRunner(
+            challenge,
             target,
             network_policy=NetworkPolicy(
                 challenge_transport=False,
@@ -87,11 +117,23 @@ def main() -> int:
         blocked = True
     assert blocked
 
+    unadmitted = False
+    try:
+        RemoteTcpRunner(
+            _challenge("tcp://127.0.0.1:1"),
+            target,
+            network_policy=policy,
+        )
+    except ValueError:
+        unadmitted = True
+    assert unadmitted
+
     print(
         json.dumps(
             {
-                "probe": "ctf-target-runner-remote-tcp-controlled-v1",
+                "probe": "ctf-target-runner-remote-tcp-controlled-v2",
                 "all_passed": True,
+                "challenge_manifest_fingerprint": challenge.manifest_fingerprint,
                 "endpoint_id": runner.endpoint_id,
                 "pinned_ips": list(runner.pinned_ips),
                 "peer_ip": receipt.peer_ip,
@@ -103,6 +145,7 @@ def main() -> int:
                 "external_retrieval": False,
                 "plaintext_persisted": False,
                 "blocked_policy_rejected": blocked,
+                "unadmitted_endpoint_rejected": unadmitted,
             },
             sort_keys=True,
             indent=2,
