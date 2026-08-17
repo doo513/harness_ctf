@@ -36,7 +36,7 @@ def _write_fixture(root: Path, *, mode="research", artifact_bytes=b"ELF-fixture"
         "allowed_tools": ["argv", "session"],
         "runner_image_digest": RUNNER,
         "challenge_revision": "r1",
-        "oracle_type": "external_flag",
+        "oracle_type": "external",
         "benchmark_policy": mode,
     }
     if extra_manifest:
