@@ -194,6 +194,8 @@ class RunExecutionEvidence:
 class IndependentAdjudication:
     adjudicator_id: str
     evidence_sha256: str
+    run_id: str
+    run_evidence_sha256: str
     oracle_accepted: bool
     highest_proof_level: ProofLevel | None
     invalid_verified_fact_keys: tuple[str, ...] = ()
@@ -202,6 +204,8 @@ class IndependentAdjudication:
         if not isinstance(self.adjudicator_id, str) or not self.adjudicator_id.strip():
             raise ValueError("adjudicator_id must be a non-empty string")
         _lower_sha256(self.evidence_sha256, field_name="evidence_sha256")
+        _lower_sha256(self.run_id, field_name="adjudication run_id")
+        _lower_sha256(self.run_evidence_sha256, field_name="adjudication run_evidence_sha256")
         if not isinstance(self.oracle_accepted, bool):
             raise ValueError("oracle_accepted must be boolean")
         if self.highest_proof_level is not None and not isinstance(self.highest_proof_level, ProofLevel):
