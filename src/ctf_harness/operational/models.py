@@ -72,12 +72,13 @@ def _validate_tcp_endpoint(endpoint: str) -> str:
     return normalized
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class OperationalChallengeRef:
-    """Immutable operational snapshot derived from one admitted ChallengeManifest.
+    """Immutable operational snapshot derived only from ChallengeManifest.
 
-    `ChallengeManifest` remains the source of truth. This object carries only the
-    identity/policy fields required to bind a SolveSpec to that admitted input.
+    Direct construction is intentionally disabled so copied challenge identity,
+    artifact bindings, endpoints, and policy fields cannot become a second
+    authority beside `ChallengeManifest`.
     """
 
     challenge_id: str
@@ -118,6 +119,31 @@ class OperationalChallengeRef:
         _require_text(self.benchmark_policy, field_name="benchmark_policy")
 
     @classmethod
+    def _from_bound_fields(
+        cls,
+        *,
+        challenge_id: str,
+        challenge_revision: str,
+        manifest_fingerprint_value: str,
+        artifact_hashes: tuple[tuple[str, str], ...],
+        remote_endpoints: tuple[str, ...],
+        allowed_network: bool,
+        oracle_type: str,
+        benchmark_policy: str,
+    ) -> "OperationalChallengeRef":
+        instance = object.__new__(cls)
+        object.__setattr__(instance, "challenge_id", challenge_id)
+        object.__setattr__(instance, "challenge_revision", challenge_revision)
+        object.__setattr__(instance, "manifest_fingerprint", manifest_fingerprint_value)
+        object.__setattr__(instance, "artifact_hashes", artifact_hashes)
+        object.__setattr__(instance, "remote_endpoints", remote_endpoints)
+        object.__setattr__(instance, "allowed_network", allowed_network)
+        object.__setattr__(instance, "oracle_type", oracle_type)
+        object.__setattr__(instance, "benchmark_policy", benchmark_policy)
+        instance.__post_init__()
+        return instance
+
+    @classmethod
     def from_manifest(
         cls,
         manifest: ChallengeManifest,
@@ -127,10 +153,10 @@ class OperationalChallengeRef:
             raise ValueError("manifest must be ChallengeManifest")
         bindings = _artifact_bindings(artifact_hashes)
         fingerprint = manifest_fingerprint(manifest, dict(bindings))
-        return cls(
+        return cls._from_bound_fields(
             challenge_id=manifest.challenge_id,
             challenge_revision=manifest.challenge_revision,
-            manifest_fingerprint=fingerprint,
+            manifest_fingerprint_value=fingerprint,
             artifact_hashes=bindings,
             remote_endpoints=tuple(manifest.remote_endpoints),
             allowed_network=manifest.allowed_network,
