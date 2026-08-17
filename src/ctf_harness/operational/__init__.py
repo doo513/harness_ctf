@@ -17,6 +17,12 @@ from .models import (
     TerminationPolicy,
     UnsupportedCapabilityBehavior,
 )
+from .solve_engine import (
+    SolveBindingFactory,
+    SolveEngine,
+    SolveRunReceipt,
+    SolveRuntimeBinding,
+)
 
 __all__ = [
     "ActorCompleteBehavior",
@@ -32,7 +38,11 @@ __all__ = [
     "RemoteTransport",
     "RunIntent",
     "RuntimeKind",
+    "SolveBindingFactory",
     "SolveBudget",
+    "SolveEngine",
+    "SolveRunReceipt",
+    "SolveRuntimeBinding",
     "SolveSpec",
     "TerminationPolicy",
     "UnsupportedCapabilityBehavior",
