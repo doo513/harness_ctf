@@ -18,7 +18,7 @@ from ctf_harness.proof.ladder import proof_level_from_verified_keys
 from ctf_harness.proof.environment_diff import compare_environments
 from ctf_harness.proof.flag_oracle import ExternalFlagOracle
 from ctf_harness.hypotheses.models import Hypothesis,HypothesisStatus
-from ctf_harness.hypotheses.pool import HypothesisPool
+from ctf_harness.hypotheses.pool import HypothesisPool,fingerprint
 from ctf_harness.recovery.adapter import map_failure
 from ctf_harness.progress.pwn import pwn_progress_snapshot
 RUNNER="sha256:"+"a"*64
@@ -54,8 +54,13 @@ def test_wp04_small_exact_vocabulary_and_helpers_fail_closed():
 def test_wp05_proof_oracle_boundary():
  full={"ctf.pwn.arch","ctf.pwn.crash_reproducible","ctf.pwn.control_flow","ctf.pwn.local_exploit","ctf.environment.compatible","ctf.pwn.remote_behavior"}
  assert proof_level_from_verified_keys({"ctf.pwn.remote_behavior"}) is None;assert proof_level_from_verified_keys(full)==ProofLevel.P5_REMOTE;assert proof_level_from_verified_keys({"ctf.pwn.remote_behavior"},completed=False)!=ProofLevel.P6_ACCEPTED;assert proof_level_from_verified_keys(set(),completed=True)==ProofLevel.P6_ACCEPTED;assert compare_environments({"libc":"A"},{"libc":"B"}).adaptation_required;o=ExternalFlagOracle(lambda c:(c=="FLAG{ok}","oracle:1"));r=o.submit("c","remote","FLAG{ok}");assert r.accepted and "FLAG{ok}" not in repr(r)
-def test_wp06_dedupe():
- h=Hypothesis("h","pwn","bin","overflow","ret","control","ev1");p=HypothesisPool();fp=p.add(h);p.record_failure(fp,"same");assert not p.should_repeat(fp,"same","ev1");assert p.should_repeat(fp,"same","ev2");p.record_failure(fp,"refuted",refuted=True);assert h.status==HypothesisStatus.REFUTED
+def test_wp06_dedupe_stable_identity_and_evidence_state():
+ h=Hypothesis("h","pwn","bin","overflow","ret","control",evidence_state_digest="ev1");p=HypothesisPool();fp=p.add(h)
+ h2=Hypothesis("other-id","pwn","bin","overflow","ret","control",evidence_state_digest="ev2");assert fingerprint(h2)==fp
+ attempt=p.begin_attempt(fp,action_digest="a"*64,evidence_state_digest="ev1",step=0);p.finish_failure(attempt,failure_signature="same",failure_kind="tool_error",retry_safe=False)
+ assert not p.guard(fp,action_digest="a"*64,evidence_state_digest="ev1").allowed
+ assert p.guard(fp,action_digest="a"*64,evidence_state_digest="ev2").allowed
+ p.mark_refuted(fp);assert h.status==HypothesisStatus.REFUTED;assert not p.guard(fp,action_digest="a"*64,evidence_state_digest="ev2").allowed
 def test_wp07_recovery_progress():
  assert map_failure("ENVIRONMENT_MISMATCH").core_failure=="ENV_ERROR" and map_failure("FLAG_REJECTED").target=="return_to_proof"
  with pytest.raises(ValueError):map_failure("UNKNOWN")
