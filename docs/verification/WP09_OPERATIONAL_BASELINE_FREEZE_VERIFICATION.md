@@ -6,7 +6,7 @@
 
 Freeze a reproducible repository baseline before operational solve contracts and target execution abstractions are added.
 
-The WP09 gate is intentionally narrow. It does not claim autonomous solving effectiveness. It establishes that the Base revision, package dependency, CI checkout, and permanent verification workflow are consistent and do not depend on an ephemeral live Dreamhack endpoint.
+The WP09 gate is intentionally narrow. It does not claim autonomous solving effectiveness. It establishes that the Base revision, package dependency, CI checkout, and permanent verification workflow are consistent and that temporary evidence-acquisition workflows are not left attached to ordinary branch pushes.
 
 ---
 
@@ -33,13 +33,16 @@ pyproject.toml optional Base dependency
 
 Therefore the Base revision exercised by CI could differ from the revision installed by a user through the package optional dependency.
 
-The same branch also contained:
+The branch also contained temporary push-triggered acquisition/probe workflows used during WP08 investigation:
 
 ```text
 .github/workflows/dh103-leak-temp.yml
+.github/workflows/qemu-system-export-temp.yml
 ```
 
-which contacted an ephemeral Dreamhack endpoint on branch push. This was useful for WP08 smoke evidence but was not an acceptable permanent deterministic CI dependency.
+The first contacted an ephemeral Dreamhack endpoint. The second installed/bundled QEMU on every branch push for one-off artifact acquisition. Both were useful historical investigation mechanisms, but neither belongs on the permanent operational branch path.
+
+The QEMU export workflow was found during a second WP09 review after the first gate. It was removed rather than silently leaving the earlier report overstated.
 
 ---
 
@@ -58,6 +61,9 @@ and the CI responsibility split:
 ```text
 permanent verify workflow
 -> deterministic controlled evidence only
+
+one-off dependency/evidence acquisition
+-> explicit temporary/operator action, then removed
 
 real challenge smoke
 -> explicit/operator-triggered execution outside the required CI gate
@@ -79,19 +85,20 @@ doo513/base_harness@75834ac1ecb6c022771c2efee1f19495f356ee76
 
 matching `base_harness.lock.json` and the permanent verification workflow checkout.
 
-### 4.2 Temporary live workflow removal
+### 4.2 Temporary workflow removal
 
 Deleted:
 
 ```text
 .github/workflows/dh103-leak-temp.yml
+.github/workflows/qemu-system-export-temp.yml
 ```
 
-Historical Dreamhack smoke evidence remains in the WP08 reports and historical Actions runs. It is not converted into a permanent CI dependency.
+Historical Dreamhack/QEMU acquisition evidence remains in WP08 reports and historical Actions runs where relevant. The temporary workflows are not production dependencies.
 
 ### 4.3 Repository baseline regression tests
 
-Added:
+Added and then strengthened:
 
 ```text
 tests/test_repository_baseline.py
@@ -102,21 +109,34 @@ The tests assert:
 1. package Base dependency equals lock package/repository/commit;
 2. `verify.yml` checks out the locked Base repository/revision;
 3. permanent `verify.yml` contains no known Dreamhack live endpoint;
-4. the temporary Dreamhack push workflow is absent.
+4. no workflow whose filename is marked `temp`/`temporary` remains in `.github/workflows/`.
+
+The fourth condition replaces the initial one-file Dreamhack-only assertion so another temporary acquisition workflow cannot remain unnoticed under a different name.
 
 ---
 
 ## 5. Positive Evidence
 
-WP09 implementation code gate:
+Initial WP09 implementation gate:
 
 ```text
 commit: f9c9f33c4522754a4adc7b7a41db22c4826ef764
 GitHub Actions run: 32043326712
 conclusion: success
+CTF pytest: 96 passed in 4.99s
 ```
 
-The run completed successfully for:
+Second-review remediation gate, after removal of the remaining temporary QEMU export workflow and generic temporary-workflow negative control:
+
+```text
+commit: f0e37ad752f4c049f157c11541119a00b39d1075
+GitHub Actions run: 32043831571
+conclusion: success
+```
+
+The remediation gate ran on top of the already-passed WP10 contract implementation and therefore is not used to redefine WP10's evidence identity; it demonstrates that the strengthened WP09 repository invariant remains compatible with the full existing branch gate.
+
+Both relevant gates preserved:
 
 - pinned Base revision check;
 - install / `pip check`;
@@ -134,14 +154,6 @@ The run completed successfully for:
 - WP07 recovery/progress probe;
 - WP08 arm runtime, benchmark integrity, corpus ingestion, executor boundary, and runtime-backed executor probes.
 
-The preserved CTF pytest artifact reports:
-
-```text
-96 passed in 4.99s
-```
-
-The increase from the previous 92-test baseline is the four WP09 repository invariant tests.
-
 ---
 
 ## 6. Negative Control
@@ -154,10 +166,10 @@ The gate fails if a future change introduces any of the following:
 pyproject Base commit != lock commit
 verify checkout repo/ref != lock repo/commit
 known Dreamhack live endpoint in permanent verify.yml
-temporary Dreamhack push workflow restored
+workflow filename marked temp/temporary left on the branch
 ```
 
-These assertions do not prove arbitrary future workflow safety. They specifically prevent recurrence of the defects that required WP09.
+These assertions do not prove arbitrary future workflow safety. They specifically prevent recurrence of the defects that required WP09 and its second-review remediation.
 
 ---
 
@@ -165,12 +177,12 @@ These assertions do not prove arbitrary future workflow safety. They specificall
 
 **Result: PASS.**
 
-The WP09 code gate preserved all existing Base regression/invariant stages and all existing CTF P1–P6/WP06/WP07/WP08 controlled probes in the same successful Actions job.
+The WP09 code gate and remediation gate preserved all existing Base regression/invariant stages and all existing CTF P1–P6/WP06/WP07/WP08 controlled probes.
 
 WP09 did not modify:
 
 - Base source code;
-- CTF semantic verifiers;
+- CTF semantic verifier truth criteria;
 - proof authority;
 - recovery/progress authority;
 - evaluation success authority.
@@ -181,21 +193,20 @@ WP09 did not modify:
 
 No new real challenge execution is required for WP09.
 
-The existing Dreamhack 103 smoke evidence remains historical input to the operational roadmap, but live challenge availability is deliberately no longer a required CI condition.
+The existing Dreamhack 103 smoke evidence remains historical input to the operational roadmap, but live challenge availability and one-off QEMU export jobs are deliberately not required CI conditions.
 
 ---
 
 ## 9. Unsupported / Open
 
-WP09 does not provide:
+WP09 itself does not provide:
 
-- operational `SolveSpec` / `TargetSpec` contracts;
-- target runtime abstraction;
+- operational target execution;
 - QEMU-backed registered P1 evidence;
 - real model controller;
 - end-to-end autonomous solve loop.
 
-Those remain WP10+ work.
+Operational contracts are now covered by WP10; execution remains WP11 work.
 
 ---
 
@@ -204,12 +215,13 @@ Those remain WP10+ work.
 ```text
 Base package/lock/CI pin consistency      PASS
 Base regression                           PASS
-CTF regression                            PASS — 96 passed
+CTF regression                            PASS
+temporary push workflows                  NONE
+permanent Dreamhack endpoint dependency   NONE
 existing controlled P1-P6 probes          PASS
 WP06/WP07/WP08 probes                      PASS
-permanent live endpoint dependency         NONE
 ```
 
 **Decision:** `PASS — OPERATIONAL BASELINE FROZEN`.
 
-The next implementation gate is WP10 operational solve contracts, followed by WP11 target execution. WP08 effectiveness remains open; WP09 does not convert controlled infrastructure evidence into a solve-rate claim.
+The current implementation gate after WP10 is WP11 target execution. WP08 effectiveness remains open; WP09 does not convert controlled infrastructure evidence into a solve-rate claim.
