@@ -55,3 +55,5 @@ jobs:
         run: sudo -E "$(command -v python)" scripts/pwn_crash_semantic_probe.py
       - name: Live Pwn x86_64 control-flow semantic probe
         run: sudo -E "$(command -v python)" scripts/pwn_control_semantic_probe.py
+      - name: Live Pwn local-proof semantic probe
+        run: sudo -E "$(command -v python)" scripts/pwn_local_proof_semantic_probe.py

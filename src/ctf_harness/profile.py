@@ -10,8 +10,10 @@ from ctf_harness.tools.control import make_control_probe_tool
 from ctf_harness.verifiers.pwn.core import static_pwn_verifiers
 from ctf_harness.verifiers.pwn.crash import CrashReproducibleVerifier
 from ctf_harness.verifiers.pwn.control import ControlFlowVerifier
+from ctf_harness.verifiers.pwn.local import LocalExploitVerifier
 
 _LEVEL = {name: getattr(VerificationLevel, name) for name in ("LOGICAL", "EXECUTION", "EXTERNAL_ORACLE")}
+
 
 class VerifiedCTFProfile(CTFProfile):
     name = "verified_ctf"
@@ -35,7 +37,13 @@ class VerifiedCTFProfile(CTFProfile):
         return tools
 
     def verifiers(self):
-        return [*super().verifiers(), *static_pwn_verifiers(), CrashReproducibleVerifier(), ControlFlowVerifier()]
+        return [
+            *super().verifiers(),
+            *static_pwn_verifiers(),
+            CrashReproducibleVerifier(),
+            ControlFlowVerifier(),
+            LocalExploitVerifier(),
+        ]
 
     def claim_verification_registry(self):
         rules = []

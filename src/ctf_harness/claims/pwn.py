@@ -1,10 +1,12 @@
 from dataclasses import dataclass
 
+
 @dataclass(frozen=True)
 class ClaimSpec:
     key_prefix: str
     verification_level: str
     verifier: str
+
 
 PWN_CLAIM_SPECS = (
     ClaimSpec("ctf.pwn.arch", "LOGICAL", "pwn_arch"),
@@ -14,7 +16,9 @@ PWN_CLAIM_SPECS = (
     ClaimSpec("ctf.pwn.pie", "LOGICAL", "pwn_pie"),
     ClaimSpec("ctf.pwn.crash_reproducible", "EXECUTION", "pwn_crash_reproducible"),
     ClaimSpec("ctf.pwn.control_flow", "EXECUTION", "pwn_control_flow_x86_64"),
+    ClaimSpec("ctf.pwn.local_exploit", "EXECUTION", "pwn_local_exploit"),
 )
+
 
 def resolve_claim_spec(key: str) -> ClaimSpec | None:
     matches = [spec for spec in PWN_CLAIM_SPECS if key == spec.key_prefix]
