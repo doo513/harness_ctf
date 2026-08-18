@@ -71,9 +71,9 @@ class OperatorService:
     def challenges(self) -> list[dict]:
         try:
             session = self.site_gateway.build()
+            return [challenge.descriptor() for challenge in session.list_challenges()]
         except Exception as exc:
-            raise OperatorError(f"cannot open configured site: {exc}") from exc
-        return [challenge.descriptor() for challenge in session.list_challenges()]
+            raise OperatorError(f"cannot list configured site challenges: {exc}") from exc
 
     def challenge(self, challenge_id: str) -> dict:
         try:
@@ -94,8 +94,9 @@ class OperatorService:
     def download_challenge(self, challenge_id: str, workspace: str | os.PathLike[str]) -> dict:
         """Download platform artifacts into a prepared projection input directory.
 
-        Existing files are never overwritten. Platform snapshots and downloads
-        remain observations; this method does not admit artifacts into truth.
+        The operation validates every download before writing and rolls back any
+        newly created artifact if a later write fails. Existing files are never
+        overwritten. Downloads remain observations and are not admitted as truth.
         """
         try:
             session = self.site_gateway.build()
@@ -104,22 +105,44 @@ class OperatorService:
             raise OperatorError(f"cannot read challenge {challenge_id!r}: {exc}") from exc
 
         projection = RunWorkspaceProjection.prepare(workspace)
-        written: list[dict] = []
+        pending: list[tuple[object, str, Path]] = []
+        seen_names: set[str] = set()
         for file_url in snapshot.file_urls:
             try:
                 artifact = session.download(file_url)
             except Exception as exc:
                 raise OperatorError(f"cannot download challenge artifact: {exc}") from exc
             name = self._safe_artifact_name(artifact.ref)
+            if name in seen_names:
+                raise OperatorError(f"duplicate downloaded artifact name: {name}")
+            seen_names.add(name)
             target = projection.input_dir / name
-            try:
+            if target.exists() or target.is_symlink():
+                raise OperatorError(f"refusing to overwrite existing artifact: {name}")
+            pending.append((artifact, name, target))
+
+        created: list[Path] = []
+        try:
+            for artifact, _, target in pending:
                 with target.open("xb") as handle:
                     handle.write(artifact.content)
-            except FileExistsError as exc:
-                raise OperatorError(f"refusing to overwrite existing artifact: {name}") from exc
-            written.append({**artifact.descriptor(), "path": f"input/{name}"})
+                created.append(target)
+        except Exception as exc:
+            for target in reversed(created):
+                try:
+                    target.unlink()
+                except OSError:
+                    pass
+            if isinstance(exc, FileExistsError):
+                raise OperatorError("artifact appeared concurrently; refusing partial overwrite") from exc
+            raise OperatorError(f"cannot persist challenge artifacts: {exc}") from exc
+
+        written = [
+            {**artifact.descriptor(), "path": f"input/{name}"}
+            for artifact, name, _ in pending
+        ]
         return {
-            "schema_version": "ctf-operator-download-v1",
+            "schema_version": "ctf-operator-download-v2",
             "challenge": snapshot.descriptor(),
             "workspace": projection.descriptor(),
             "artifacts": written,
