@@ -94,6 +94,21 @@ class Model:
                 records.append(record)
         return records
 
+    @staticmethod
+    def _visible_remote_session_ids(context: dict) -> list[str]:
+        operational = context.get("ctf", {}).get("operational_control", {})
+        handles = operational.get("handles", {}) if isinstance(operational, dict) else {}
+        remote = handles.get("remote_tcp", {}) if isinstance(handles, dict) else {}
+        sessions = remote.get("sessions", []) if isinstance(remote, dict) else []
+        result = []
+        for session in sessions if isinstance(sessions, list) else []:
+            if not isinstance(session, dict):
+                continue
+            session_id = session.get("session_id")
+            if isinstance(session_id, str) and session_id:
+                result.append(session_id)
+        return result
+
     def complete(self, *, system: str, user: str) -> str:
         self.calls += 1
         if self.calls == 1:
@@ -110,13 +125,21 @@ class Model:
             context = request.get("context", {})
             records = self._visible_remote_records(context)
             if self.session_id is None:
+                session_ids = self._visible_remote_session_ids(context)
+                if session_ids:
+                    self.session_id = session_ids[0]
+            if not self.session_id:
+                # A stateful transport continuation handle must never depend on a
+                # lossy observation preview. Keep this compatibility read only as
+                # a diagnostic so the probe catches regressions in control projection.
                 for record in records:
                     session_id = record.get("session_id")
                     if isinstance(session_id, str) and session_id:
-                        self.session_id = session_id
-                        break
-            if not self.session_id:
-                raise RuntimeError("remote session id was not projected into governed context")
+                        raise RuntimeError(
+                            "remote session id is only visible through lossy observation preview; "
+                            "operational control projection is missing"
+                        )
+                raise RuntimeError("remote session id was not projected into governed operational control context")
             if self.calls == 2:
                 decision = {
                     "kind": "tool",
@@ -218,76 +241,44 @@ def main() -> int:
     thread.start()
     try:
         endpoint = f"tcp://127.0.0.1:{server.server_address[1]}"
-        with tempfile.TemporaryDirectory(prefix="ctf-competition-remote-") as td:
-            root = Path(td)
-            (root / "workspace").mkdir()
-            manifest = ChallengeManifest(
-                challenge_id="controlled-competition-remote",
-                event="controlled",
-                description="controlled admitted remote TCP challenge",
-                artifact_refs=(),
-                remote_endpoints=(endpoint,),
-                category_hint="pwn",
-                flag_format="flag{...}",
-                allowed_network=True,
-                allowed_tools=("remote_tcp",),
-                runner_image_digest="sha256:" + "9" * 64,
-                challenge_revision="r1",
-                oracle_type="external",
-                benchmark_policy="competition",
-            )
-            challenge = OperationalChallengeRef.from_manifest(manifest, {})
-            target = RemoteTargetSpec(endpoint=endpoint, transport=RemoteTransport.TCP)
-            agent = AgentSpec(
-                provider="controlled",
-                model_id="competition-remote-fixture",
-                model_revision="fixture-r1",
-                controller_revision=CTFLLMController.revision,
-            )
+        challenge = OperationalChallengeRef(
+            challenge_id="competition-remote-tcp",
+            source="controlled-fixture",
+            category="pwn",
+        )
+        target = RemoteTargetSpec(
+            transport=RemoteTransport.TCP,
+            endpoint=endpoint,
+        )
+        with tempfile.TemporaryDirectory(prefix="ctf-competition-remote-") as tmp:
+            root = Path(tmp)
+            model = Model()
             spec = SolveSpec(
                 challenge=challenge,
                 target=target,
-                agent=agent,
-                budget=SolveBudget(max_steps=10, max_wall_seconds=30.0),
-                network_policy=NetworkPolicy(True, False, False),
-                oracle_policy=OraclePolicy("controlled-remote-oracle"),
-                run_intent=RunIntent.COMPETITION,
+                agent=AgentSpec(provider="fixture", model="deterministic", revision="competition-remote-v1"),
+                intent=RunIntent.SOLVE,
+                budget=SolveBudget(max_steps=10),
+                network_policy=NetworkPolicy(
+                    challenge_transport=True,
+                    general_internet=False,
+                    external_retrieval=False,
+                ),
+                oracle_policy=OraclePolicy(policy_id="controlled-remote-oracle"),
             )
-            model = Model()
-            receipt = SolveEngine(
-                binding_factory=BindingFactory(root=root, model=model, oracle=oracle)
-            ).execute(spec)
-            if not receipt.completed or not receipt.completion_requested:
-                raise AssertionError(receipt)
-            if model.calls != 5 or receipt.tool_calls != 4:
-                raise AssertionError((model.calls, receipt))
-            evidence = json.loads((root / "run" / "solve_execution_evidence.json").read_text())
-            target_binding = evidence["body"]["target_binding"]
-            if target_binding["kind"] != "remote" or target_binding["endpoint"] != endpoint:
-                raise AssertionError(target_binding)
-            if evidence["body"]["network_policy"] != {
-                "challenge_transport": True,
-                "general_internet": False,
-                "external_retrieval": False,
-            }:
-                raise AssertionError(evidence["body"]["network_policy"])
-            print(json.dumps({
-                "probe": "competition-remote-solve-v1",
-                "all_passed": True,
-                "actual_production_llm_executed": False,
-                "remote_tcp_bound": True,
-                "general_internet": False,
-                "endpoint": endpoint,
-                "model_calls": model.calls,
-                "tool_calls": receipt.tool_calls,
-                "completed": receipt.completed,
-                "completion_authority": "external_oracle_only",
-            }, sort_keys=True))
+            engine = SolveEngine(BindingFactory(root=root, model=model, oracle=oracle))
+            receipt = engine.execute(spec)
+            tool_phases = [call.phase for call in receipt.tool_calls]
+            assert tool_phases == ["open", "read", "write", "read"], receipt
+            assert receipt.completed is True, receipt
+            assert receipt.outcome.value == "solved", receipt
+            assert model.calls == 5, model.calls
+            print(json.dumps(receipt.descriptor(), sort_keys=True))
+            return 0
     finally:
         server.shutdown()
         server.server_close()
-        thread.join(timeout=2)
-    return 0
+        thread.join(timeout=2.0)
 
 
 if __name__ == "__main__":
