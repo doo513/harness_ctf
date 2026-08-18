@@ -11,6 +11,19 @@ from .client import MCPClientError, MCPRegistry, build_mcp_registry as _build_mc
 SUPPORTED_MCP_PROTOCOL = "2026-07-28"
 
 
+class GuardedMCPRegistry(MCPRegistry):
+    """Public MCP registry with human approval required for remote tool calls."""
+
+    def tool_specs(self):
+        specs = super().tool_specs()
+        for spec in specs:
+            if spec.name == "mcp_call":
+                spec.permission = "confirm"
+                spec.provenance = dict(spec.provenance)
+                spec.provenance["approval_policy"] = "operator_confirm_required"
+        return specs
+
+
 def build_mcp_registry(
     config: HarnessConfiguration,
     *,
@@ -36,9 +49,10 @@ def build_mcp_registry(
             "unsupported MCP protocol version(s): "
             f"{rendered}; built-in client supports {SUPPORTED_MCP_PROTOCOL}"
         )
-    return _build_mcp_registry(
+    registry = _build_mcp_registry(
         config,
         environ=environ,
         http_opener=http_opener,
         stdio_runner=stdio_runner,
     )
+    return GuardedMCPRegistry(config, registry.clients)
