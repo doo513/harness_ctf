@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Mapping
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from ctf_harness.operational.models import CredentialKind, CredentialRef
@@ -47,15 +47,17 @@ class CredentialResolver:
         *,
         keyring_getter: Callable[[str], str | None] | None = None,
         session_getter: Callable[[str], str | None] | None = None,
+        environ: Mapping[str, str] | None = None,
     ):
         self.keyring_getter = keyring_getter
         self.session_getter = session_getter
+        self.environ = os.environ if environ is None else environ
 
     def resolve(self, ref: CredentialRef) -> SecretHandle:
         if not isinstance(ref, CredentialRef):
             raise ValueError("credential reference must be CredentialRef")
         if ref.kind is CredentialKind.ENV:
-            value = os.environ.get(ref.locator)
+            value = self.environ.get(ref.locator)
         elif ref.kind is CredentialKind.KEYRING:
             value = None if self.keyring_getter is None else self.keyring_getter(ref.locator)
         elif ref.kind is CredentialKind.SESSION:
