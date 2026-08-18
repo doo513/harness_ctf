@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Mapping, Sequence
 
-from ctf_harness.configuration.models import HarnessConfiguration, ModelProviderConfig, SiteProfileConfig
+from ctf_harness.configuration.models import HarnessConfiguration, MCPServerConfig, ModelProviderConfig, SiteProfileConfig
 
 
 class DoctorStatus(str, Enum):
@@ -53,7 +53,7 @@ class DoctorReport:
         for check in self.checks:
             counts[check.status.value] += 1
         return {
-            "schema_version": "ctf-doctor-report-v1",
+            "schema_version": "ctf-doctor-report-v2",
             "ready": self.ready,
             "counts": counts,
             "checks": [check.descriptor() for check in self.checks],
@@ -75,7 +75,7 @@ class Doctor:
     """Read-only operational readiness diagnostics.
 
     Doctor never installs software, mutates configuration, resolves paid model
-    calls, submits flags, or writes Harness truth state.
+    calls, submits flags, invokes MCP tools, or writes Harness truth state.
     """
 
     def __init__(
@@ -145,6 +145,66 @@ class Doctor:
             )
         return checks
 
+    def _mcp_check(self, cfg: MCPServerConfig) -> list[DoctorCheck]:
+        prefix = f"mcp.{cfg.name}"
+        checks: list[DoctorCheck] = []
+        if cfg.protocol_version == "2026-07-28":
+            checks.append(DoctorCheck(f"{prefix}.protocol", DoctorStatus.PASS, cfg.protocol_version, "mcp"))
+        else:
+            checks.append(
+                DoctorCheck(
+                    f"{prefix}.protocol",
+                    DoctorStatus.FAIL,
+                    f"built-in MCP client currently supports 2026-07-28, configured {cfg.protocol_version}",
+                    "mcp",
+                )
+            )
+        if cfg.transport == "stdio":
+            found = self.which(cfg.command[0]) if cfg.command else None
+            checks.append(
+                DoctorCheck(
+                    f"{prefix}.transport",
+                    DoctorStatus.PASS if found else DoctorStatus.FAIL,
+                    found or f"stdio command not found: {cfg.command[0] if cfg.command else '-'}",
+                    "mcp",
+                )
+            )
+            missing_env = [name for name in cfg.pass_env_names if not self.environ.get(name)]
+            if missing_env:
+                checks.append(
+                    DoctorCheck(
+                        f"{prefix}.env",
+                        DoctorStatus.WARN,
+                        f"forwarded environment variable(s) not set: {', '.join(missing_env)}",
+                        "mcp",
+                    )
+                )
+        else:
+            checks.append(DoctorCheck(f"{prefix}.transport", DoctorStatus.PASS, cfg.endpoint or "", "mcp"))
+            if cfg.auth_env and not self.environ.get(cfg.auth_env):
+                checks.append(DoctorCheck(f"{prefix}.credential", DoctorStatus.FAIL, f"{cfg.auth_env} is not set", "mcp"))
+            elif cfg.auth_env:
+                checks.append(DoctorCheck(f"{prefix}.credential", DoctorStatus.PASS, f"{cfg.auth_env} is set", "mcp"))
+        if cfg.allowed_tools:
+            checks.append(
+                DoctorCheck(
+                    f"{prefix}.allowlist",
+                    DoctorStatus.PASS,
+                    f"{len(cfg.allowed_tools)} explicit tool rule(s)",
+                    "mcp",
+                )
+            )
+        else:
+            checks.append(
+                DoctorCheck(
+                    f"{prefix}.allowlist",
+                    DoctorStatus.WARN,
+                    "no MCP tools are allowlisted; calls will be denied",
+                    "mcp",
+                )
+            )
+        return checks
+
     def _tool_checks(self) -> list[DoctorCheck]:
         checks = [DoctorCheck("runtime.python", DoctorStatus.PASS, sys.executable, "runtime")]
         for requirement in self.tool_requirements:
@@ -166,5 +226,7 @@ class Doctor:
         checks.extend(self._model_checks(self.config.model()))
         site_cfg = self.config.site() if self.config.active_site else None
         checks.extend(self._site_checks(site_cfg))
+        for cfg in self.config.mcp_servers.values():
+            checks.extend(self._mcp_check(cfg))
         checks.extend(self._tool_checks())
         return DoctorReport(tuple(checks))
