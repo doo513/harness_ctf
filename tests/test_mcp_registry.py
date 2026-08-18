@@ -2,51 +2,41 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from ctf_harness.configuration import ConfigurationError, load_configuration
-from ctf_harness.mcp import MCPClientError, build_mcp_registry
+from ctf_harness.mcp import MCPClientError, MCPTool, MCPToolResult, build_mcp_registry
+from ctf_harness.mcp.client import SDKMCPClient
 
 
-class _HTTPResponse:
-    def __init__(self, payload: dict, content_type: str = "application/json"):
-        self.body = json.dumps(payload).encode("utf-8")
-        self.headers = {"Content-Type": content_type}
+class _FakeMCPBackend:
+    def __init__(self, server: str):
+        self.server = server
+        self.calls = []
 
-    def __enter__(self):
-        return self
+    def list_tools(self):
+        return (
+            MCPTool(self.server, "search", "search", {"type": "object"}, title="Search"),
+            MCPTool(self.server, "not_allowed", "hidden", {"type": "object"}),
+        )
 
-    def __exit__(self, exc_type, exc, tb):
-        return False
+    def call_tool(self, name: str, arguments):
+        self.calls.append((name, dict(arguments)))
+        return MCPToolResult(self.server, name, {"structuredContent": {"ok": True}, "isError": False})
 
-    def read(self, limit: int) -> bytes:
-        return self.body[:limit]
-
-
-class _MCPOpener:
-    def __init__(self):
-        self.requests = []
-
-    def open(self, request, timeout: float):
-        message = json.loads(request.data.decode("utf-8"))
-        self.requests.append((request, message, timeout))
-        if message["method"] == "tools/list":
-            result = {
-                "tools": [
-                    {"name": "search", "description": "search", "inputSchema": {"type": "object"}},
-                    {"name": "not_allowed", "description": "hidden", "inputSchema": {"type": "object"}},
-                ]
-            }
-        else:
-            result = {"structuredContent": {"ok": True}, "isError": False}
-        return _HTTPResponse({"jsonrpc": "2.0", "id": message["id"], "result": result})
+    def descriptor(self):
+        return {
+            "schema_version": "fake-mcp-client",
+            "server": self.server,
+            "credential_values_persisted": False,
+            "truth_authority": "none",
+        }
 
 
-def _http_config(path: Path) -> Path:
+def _http_config(path: Path, *, protocol_version: str = "2026-07-28") -> Path:
     path.write_text(
-        """
+        f"""
 [model]
 active = "primary"
 [models.primary]
@@ -57,13 +47,24 @@ api_key_env = "OPENAI_API_KEY"
 [mcp_servers.analysis]
 transport = "streamable_http"
 endpoint = "https://mcp.example/mcp"
-protocol_version = "2026-07-28"
+protocol_version = "{protocol_version}"
 auth_env = "MCP_TOKEN"
 allowed_tools = ["search"]
 """,
         encoding="utf-8",
     )
     return path
+
+
+def _registry(cfg):
+    backends = {}
+
+    def factory(server_cfg, env):
+        backend = _FakeMCPBackend(server_cfg.name)
+        backends[server_cfg.name] = backend
+        return backend
+
+    return build_mcp_registry(cfg, environ={"MCP_TOKEN": "mcp-secret"}, client_factory=factory), backends
 
 
 def test_mcp_configuration_rejects_inline_credentials(tmp_path: Path):
@@ -87,81 +88,46 @@ token = "secret"
         load_configuration(path)
 
 
-def test_http_mcp_registry_filters_remote_metadata_and_routes_allowlisted_tool(tmp_path: Path):
-    opener = _MCPOpener()
+def test_registry_filters_remote_metadata_and_routes_allowlisted_tool(tmp_path: Path):
     cfg = load_configuration(_http_config(tmp_path / "harness.toml"))
-    registry = build_mcp_registry(cfg, environ={"MCP_TOKEN": "mcp-secret"}, http_opener=opener)
+    registry, backends = _registry(cfg)
     tools = registry.list_tools("analysis")
     assert [tool.name for tool in tools] == ["search"]
+    assert tools[0].descriptor()["trust"] == "untrusted_server_metadata"
+
     result = registry.call_tool("analysis", "search", {"q": "ctf"})
     assert result["truth_authority"] == "none"
     assert result["trust"] == "untrusted_observation"
-    call_request, call_message, _ = opener.requests[-1]
-    assert call_message["method"] == "tools/call"
-    assert call_request.get_header("Mcp-method") == "tools/call"
-    assert call_request.get_header("Mcp-name") == "search"
-    assert call_request.get_header("Mcp-protocol-version") == "2026-07-28"
-    assert call_request.get_header("Authorization") == "Bearer mcp-secret"
-    assert "mcp-secret" not in json.dumps(registry.descriptor())
+    assert backends["analysis"].calls == [("search", {"q": "ctf"})]
 
 
 def test_mcp_tool_call_is_denied_when_not_allowlisted(tmp_path: Path):
     cfg = load_configuration(_http_config(tmp_path / "harness.toml"))
-    registry = build_mcp_registry(cfg, environ={"MCP_TOKEN": "x"}, http_opener=_MCPOpener())
+    registry, backends = _registry(cfg)
     with pytest.raises(MCPClientError, match="not allowlisted"):
         registry.call_tool("analysis", "not_allowed", {})
+    assert backends["analysis"].calls == []
 
 
-def test_mcp_registry_fails_closed_on_unsupported_protocol_version(tmp_path: Path):
-    path = _http_config(tmp_path / "harness.toml")
-    path.write_text(path.read_text(encoding="utf-8").replace("2026-07-28", "2025-11-25"), encoding="utf-8")
-    cfg = load_configuration(path)
-    with pytest.raises(MCPClientError, match="unsupported MCP protocol"):
-        build_mcp_registry(cfg, environ={"MCP_TOKEN": "x"}, http_opener=_MCPOpener())
-
-
-def test_stdio_mcp_passes_only_explicit_environment(tmp_path: Path):
-    path = tmp_path / "harness.toml"
-    path.write_text(
-        """
-[model]
-active = "primary"
-[models.primary]
-provider = "openai"
-model = "gpt-test"
-api_key_env = "OPENAI_API_KEY"
-[mcp_servers.ida]
-transport = "stdio"
-command = ["ida-mcp"]
-pass_env_names = ["IDA_TOKEN"]
-allowed_tools = ["decompile"]
-""",
-        encoding="utf-8",
-    )
-    calls = []
-
-    def runner(argv, **kwargs):
-        message = json.loads(kwargs["input"].decode("utf-8"))
-        calls.append((argv, kwargs, message))
-        wire = json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": {"ok": True}}).encode("utf-8") + b"\n"
-        return SimpleNamespace(returncode=0, stdout=wire, stderr=b"")
-
-    cfg = load_configuration(path)
-    registry = build_mcp_registry(
-        cfg,
-        environ={"PATH": "/bin", "LANG": "C", "IDA_TOKEN": "ida-secret", "UNRELATED_SECRET": "nope"},
-        stdio_runner=runner,
-    )
-    result = registry.call_tool("ida", "decompile", {"address": "0x401000"})
-    assert result["result"] == {"ok": True}
-    child_env = calls[0][1]["env"]
-    assert child_env["IDA_TOKEN"] == "ida-secret"
-    assert "UNRELATED_SECRET" not in child_env
-    assert calls[0][1]["shell"] is False
-
-
-def test_registry_exposes_only_two_harness_owned_mcp_tools(tmp_path: Path):
+def test_official_sdk_client_descriptor_never_contains_auth_value(tmp_path: Path):
     cfg = load_configuration(_http_config(tmp_path / "harness.toml"))
-    registry = build_mcp_registry(cfg, environ={"MCP_TOKEN": "x"}, http_opener=_MCPOpener())
-    specs = registry.tool_specs()
-    assert [spec.name for spec in specs] == ["mcp_list", "mcp_call"]
+    client = SDKMCPClient(cfg.mcp_server("analysis"), environ={"MCP_TOKEN": "mcp-secret"})
+    rendered = json.dumps(client.descriptor())
+    assert "mcp-secret" not in rendered
+    assert client.descriptor()["sdk"] == "mcp-python-v2"
+
+
+def test_protocol_mode_is_delegated_to_official_sdk_instead_of_hard_blocked(tmp_path: Path):
+    cfg = load_configuration(_http_config(tmp_path / "harness.toml", protocol_version="legacy"))
+    registry, _ = _registry(cfg)
+    assert registry.server_names == ("analysis",)
+
+
+def test_registry_exposes_only_harness_owned_mcp_tools_with_call_confirmation(tmp_path: Path):
+    cfg = load_configuration(_http_config(tmp_path / "harness.toml"))
+    registry, _ = _registry(cfg)
+    specs = {spec.name: spec for spec in registry.tool_specs()}
+    assert set(specs) == {"mcp_list", "mcp_call"}
+    assert specs["mcp_list"].permission == "auto"
+    assert specs["mcp_call"].permission == "confirm"
+    assert specs["mcp_call"].provenance["approval_policy"] == "operator_confirm_required"
