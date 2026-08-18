@@ -15,7 +15,7 @@ def main() -> int:
         config = load_configuration(args.config)
         report = Doctor(config).run()
     except ConfigurationError as exc:
-        print(json.dumps({"schema_version": "ctf-doctor-report-v1", "ready": False, "configuration_error": str(exc)}))
+        print(json.dumps({"schema_version": "ctf-doctor-report-v2", "ready": False, "configuration_error": str(exc)}))
         return 2
     print(json.dumps(report.descriptor(), ensure_ascii=False, sort_keys=True, indent=2))
     return 0 if report.ready else 2
