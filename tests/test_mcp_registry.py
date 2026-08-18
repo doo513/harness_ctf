@@ -112,6 +112,14 @@ def test_mcp_tool_call_is_denied_when_not_allowlisted(tmp_path: Path):
         registry.call_tool("analysis", "not_allowed", {})
 
 
+def test_mcp_registry_fails_closed_on_unsupported_protocol_version(tmp_path: Path):
+    path = _http_config(tmp_path / "harness.toml")
+    path.write_text(path.read_text(encoding="utf-8").replace("2026-07-28", "2025-11-25"), encoding="utf-8")
+    cfg = load_configuration(path)
+    with pytest.raises(MCPClientError, match="unsupported MCP protocol"):
+        build_mcp_registry(cfg, environ={"MCP_TOKEN": "x"}, http_opener=_MCPOpener())
+
+
 def test_stdio_mcp_passes_only_explicit_environment(tmp_path: Path):
     path = tmp_path / "harness.toml"
     path.write_text(
