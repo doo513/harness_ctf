@@ -1,0 +1,59 @@
+# Non-secret operational configuration example.
+# Put secret VALUES in environment variables, never in this file.
+
+[model]
+active = "openai-main"
+
+[models.openai-main]
+provider = "openai"
+model = "YOUR_OPENAI_MODEL"
+api_key_env = "OPENAI_API_KEY"
+timeout_seconds = 120
+max_output_bytes = 1048576
+# max_tokens = 8192
+
+# Alternative providers can coexist and be selected with CTF_HARNESS_MODEL.
+# [models.anthropic-main]
+# provider = "anthropic"
+# model = "YOUR_ANTHROPIC_MODEL"
+# api_key_env = "ANTHROPIC_API_KEY"
+#
+# [models.gemini-main]
+# provider = "gemini"
+# model = "YOUR_GEMINI_MODEL"
+# api_key_env = "GEMINI_API_KEY"
+#
+# [models.external-agent]
+# provider = "external_process"
+# command = ["python", "path/to/adapter.py"]
+# revision = "adapter-r1"
+# pass_env_names = ["PROVIDER_API_KEY"]
+
+[site]
+active = "competition"
+
+[sites.competition]
+provider = "ctfd"
+base_url = "https://ctf.example"
+credential_kind = "env"
+credential_locator = "CTFD_TOKEN"
+auth_mode = "token"
+allow_submit = false
+
+# MCP servers are optional. Remote metadata is untrusted and only allowlisted
+# tools become visible through the Harness-owned mcp_list/mcp_call boundary.
+# Agent-driven mcp_call requires operator confirmation.
+#
+# [mcp_servers.analysis]
+# transport = "streamable_http"
+# endpoint = "https://mcp.example/mcp"
+# protocol_version = "2026-07-28"
+# auth_env = "MCP_TOKEN"
+# allowed_tools = ["search", "decompile"]
+#
+# [mcp_servers.ida]
+# transport = "stdio"
+# command = ["ida-mcp"]
+# protocol_version = "2026-07-28"
+# pass_env_names = ["IDA_TOKEN"]
+# allowed_tools = ["decompile", "xrefs"]
