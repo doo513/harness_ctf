@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
@@ -102,9 +102,9 @@ class SiteProfileConfig:
     allow_submit: bool = False
 
     def __post_init__(self) -> None:
-        for value, field in ((self.name, "name"), (self.provider, "provider"), (self.base_url, "base_url")):
+        for value, field_name in ((self.name, "name"), (self.provider, "provider"), (self.base_url, "base_url")):
             if not isinstance(value, str) or not value.strip():
-                raise ConfigurationError(f"site profile {field} must be non-empty")
+                raise ConfigurationError(f"site profile {field_name} must be non-empty")
         parsed = urlsplit(self.base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ConfigurationError(f"site profile {self.name!r} base_url must be an absolute http(s) URL")
@@ -138,7 +138,7 @@ class HarnessConfiguration:
     active_model: str
     models: Mapping[str, ModelProviderConfig]
     active_site: str | None = None
-    sites: Mapping[str, SiteProfileConfig] = MappingProxyType({})
+    sites: Mapping[str, SiteProfileConfig] = field(default_factory=lambda: MappingProxyType({}))
     source_path: str | None = None
 
     def __post_init__(self) -> None:
@@ -282,14 +282,16 @@ def load_configuration(
     if unknown_root:
         raise ConfigurationError(f"configuration contains unknown root section(s): {unknown_root}")
     model_table = _expect_table(raw.get("model", {}), field="model")
-    if sorted(set(model_table) - {"active"}):
-        raise ConfigurationError("model contains unknown field(s)")
+    unknown_model = sorted(set(model_table) - {"active"})
+    if unknown_model:
+        raise ConfigurationError(f"model contains unknown field(s): {unknown_model}")
     models_table = _expect_table(raw.get("models", {}), field="models")
     if not models_table:
         raise ConfigurationError("at least one [models.<name>] profile is required")
     site_table = _expect_table(raw.get("site", {}), field="site")
-    if sorted(set(site_table) - {"active"}):
-        raise ConfigurationError("site contains unknown field(s)")
+    unknown_site = sorted(set(site_table) - {"active"})
+    if unknown_site:
+        raise ConfigurationError(f"site contains unknown field(s): {unknown_site}")
     sites_table = _expect_table(raw.get("sites", {}), field="sites")
 
     models = {name: _parse_model(name, value) for name, value in models_table.items()}
