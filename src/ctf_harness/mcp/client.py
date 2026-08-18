@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-import json
+import asyncio
 import os
-import subprocess
-import urllib.error
-import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from itertools import count
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
+
+import httpx2
+from mcp import Client, StdioServerParameters
+from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamable_http_client
 
 from harness.core.tools import SideEffect, ToolSpec
 
@@ -24,11 +26,13 @@ class MCPTool:
     name: str
     description: str
     input_schema: dict[str, Any]
+    title: str | None = None
 
     def descriptor(self) -> dict[str, Any]:
         return {
             "server": self.server,
             "name": self.name,
+            "title": self.title,
             "description": self.description,
             "input_schema": self.input_schema,
             "trust": "untrusted_server_metadata",
@@ -43,7 +47,7 @@ class MCPToolResult:
 
     def descriptor(self) -> dict[str, Any]:
         return {
-            "schema_version": "ctf-mcp-tool-result-v1",
+            "schema_version": "ctf-mcp-tool-result-v2",
             "server": self.server,
             "tool": self.tool,
             "result": self.result,
@@ -53,241 +57,193 @@ class MCPToolResult:
         }
 
 
-class _MCPClient(Protocol):
+class MCPClientBackend(Protocol):
     def list_tools(self) -> tuple[MCPTool, ...]: ...
     def call_tool(self, name: str, arguments: Mapping[str, Any]) -> MCPToolResult: ...
     def descriptor(self) -> dict[str, Any]: ...
 
 
-def _request_meta() -> dict[str, Any]:
-    return {
-        "io.modelcontextprotocol/clientInfo": {
-            "name": "verified-ctf-harness",
-            "version": "0.1.0",
-        },
-        "io.modelcontextprotocol/clientCapabilities": {},
-    }
+ClientFactory = Callable[[MCPServerConfig, Mapping[str, str]], MCPClientBackend]
 
 
-class _BaseClient:
-    def __init__(self, config: MCPServerConfig):
+def _run_async(factory: Callable[[], Any]) -> Any:
+    """Run an SDK operation from the Harness' synchronous ToolSpec boundary."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(factory())
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="ctf-mcp") as pool:
+        return pool.submit(lambda: asyncio.run(factory())).result()
+
+
+def _dump_model(value: Any) -> Any:
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        return dump(mode="json", by_alias=True, exclude_none=True)
+    return value
+
+
+def _redacted_error(exc: BaseException, secrets: tuple[str, ...]) -> str:
+    text = str(exc)
+    for secret in sorted((item for item in secrets if item), key=len, reverse=True):
+        text = text.replace(secret, "<redacted>")
+    return text[:4096]
+
+
+class SDKMCPClient:
+    """Thin adapter over the official MCP Python SDK v2.
+
+    The SDK owns wire protocol negotiation/validation and transport semantics.
+    The Harness owns configuration, secret scoping, allowlisting, approval, and
+    trust classification.
+    """
+
+    def __init__(self, config: MCPServerConfig, *, environ: Mapping[str, str]):
         self.config = config
-        self._ids = count(1)
+        self.environ = dict(environ)
 
-    def _exchange(self, message: dict[str, Any], *, method: str, tool_name: str | None) -> dict[str, Any]:
-        raise NotImplementedError
+    def _mode(self) -> str:
+        return self.config.protocol_version or "auto"
 
-    def _request(self, method: str, params: Mapping[str, Any] | None = None, *, tool_name: str | None = None) -> Any:
-        request_id = next(self._ids)
-        merged = dict(params or {})
-        meta = dict(merged.get("_meta", {})) if isinstance(merged.get("_meta"), dict) else {}
-        meta.update(_request_meta())
-        merged["_meta"] = meta
-        message = {"jsonrpc": "2.0", "id": request_id, "method": method, "params": merged}
-        response = self._exchange(message, method=method, tool_name=tool_name)
-        if response.get("jsonrpc") != "2.0" or response.get("id") != request_id:
-            raise MCPClientError(f"MCP server {self.config.name!r} returned mismatched JSON-RPC response")
-        if "error" in response:
-            error = response.get("error")
-            if isinstance(error, dict):
-                code = error.get("code")
-                message_text = error.get("message")
-                raise MCPClientError(f"MCP server {self.config.name!r} error {code}: {message_text}")
-            raise MCPClientError(f"MCP server {self.config.name!r} returned malformed error")
-        if "result" not in response:
-            raise MCPClientError(f"MCP server {self.config.name!r} response has no result")
-        return response["result"]
+    def _stdio_transport(self):
+        child_env = {
+            name: self.environ[name]
+            for name in self.config.pass_env_names
+            if name in self.environ
+        }
+        params = StdioServerParameters(
+            command=self.config.command[0],
+            args=list(self.config.command[1:]),
+            env=child_env,
+        )
+        return stdio_client(params)
 
-    def list_tools(self) -> tuple[MCPTool, ...]:
+    def _auth_header(self) -> tuple[dict[str, str], tuple[str, ...]]:
+        if not self.config.auth_env:
+            return {}, ()
+        secret = self.environ.get(self.config.auth_env, "")
+        if not secret:
+            raise MCPClientError(f"MCP auth environment variable {self.config.auth_env} is not set")
+        return {"Authorization": f"{self.config.auth_scheme} {secret}".strip()}, (secret,)
+
+    async def _with_client(self, operation: Callable[[Client], Any]) -> Any:
+        mode = self._mode()
+        try:
+            if self.config.transport == "stdio":
+                async with Client(
+                    self._stdio_transport(),
+                    mode=mode,
+                    read_timeout_seconds=float(self.config.timeout_seconds),
+                ) as client:
+                    return await operation(client)
+
+            if self.config.transport == "streamable_http":
+                if not self.config.endpoint:
+                    raise MCPClientError("MCP HTTP endpoint is not configured")
+                headers, _ = self._auth_header()
+                async with httpx2.AsyncClient(
+                    headers=headers,
+                    timeout=float(self.config.timeout_seconds),
+                    follow_redirects=False,
+                ) as http_client:
+                    transport = streamable_http_client(
+                        self.config.endpoint,
+                        http_client=http_client,
+                        terminate_on_close=False,
+                    )
+                    async with Client(
+                        transport,
+                        mode=mode,
+                        read_timeout_seconds=float(self.config.timeout_seconds),
+                    ) as client:
+                        return await operation(client)
+
+            raise MCPClientError(f"unsupported MCP transport {self.config.transport!r}")
+        except MCPClientError:
+            raise
+        except Exception as exc:
+            secrets: tuple[str, ...] = ()
+            if self.config.auth_env:
+                value = self.environ.get(self.config.auth_env, "")
+                secrets = (value,) if value else ()
+            raise MCPClientError(
+                f"MCP server {self.config.name!r} operation failed: {_redacted_error(exc, secrets)}"
+            ) from exc
+
+    @staticmethod
+    async def _list_all(client: Client, *, server: str) -> tuple[MCPTool, ...]:
         tools: list[MCPTool] = []
         cursor: str | None = None
-        seen_cursors: set[str] = set()
+        seen: set[str] = set()
         for _ in range(32):
-            params = {} if cursor is None else {"cursor": cursor}
-            result = self._request("tools/list", params)
-            if not isinstance(result, dict) or not isinstance(result.get("tools"), list):
-                raise MCPClientError(f"MCP server {self.config.name!r} returned invalid tools/list result")
-            for raw in result["tools"]:
-                if not isinstance(raw, dict):
-                    raise MCPClientError("MCP tool metadata must be an object")
-                name = raw.get("name")
-                if not isinstance(name, str) or not name:
-                    raise MCPClientError("MCP tool metadata requires name")
-                description = raw.get("description", "")
-                schema = raw.get("inputSchema", {})
-                if not isinstance(description, str) or not isinstance(schema, dict):
-                    raise MCPClientError(f"MCP tool {name!r} metadata is invalid")
-                tools.append(MCPTool(self.config.name, name, description, schema))
-            next_cursor = result.get("nextCursor")
+            result = await client.list_tools(cursor=cursor)
+            for tool in result.tools:
+                schema = tool.input_schema
+                if not isinstance(schema, dict):
+                    raise MCPClientError(f"MCP tool {tool.name!r} input schema is not an object")
+                tools.append(
+                    MCPTool(
+                        server=server,
+                        name=tool.name,
+                        title=tool.title,
+                        description=tool.description or "",
+                        input_schema=dict(schema),
+                    )
+                )
+            next_cursor = result.next_cursor
             if next_cursor is None:
                 return tuple(tools)
-            if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
-                raise MCPClientError(f"MCP server {self.config.name!r} returned invalid pagination cursor")
-            seen_cursors.add(next_cursor)
+            if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen:
+                raise MCPClientError(f"MCP server {server!r} returned an invalid pagination cursor")
+            seen.add(next_cursor)
             cursor = next_cursor
-        raise MCPClientError(f"MCP server {self.config.name!r} tools/list exceeded page limit")
+        raise MCPClientError(f"MCP server {server!r} tools/list exceeded page limit")
+
+    def list_tools(self) -> tuple[MCPTool, ...]:
+        async def run():
+            return await self._with_client(lambda client: self._list_all(client, server=self.config.name))
+
+        return _run_async(run)
 
     def call_tool(self, name: str, arguments: Mapping[str, Any]) -> MCPToolResult:
         if not isinstance(name, str) or not name:
             raise ValueError("MCP tool name must be non-empty")
         if not isinstance(arguments, Mapping):
             raise ValueError("MCP tool arguments must be a mapping")
-        result = self._request("tools/call", {"name": name, "arguments": dict(arguments)}, tool_name=name)
-        return MCPToolResult(self.config.name, name, result)
+
+        async def operation(client: Client):
+            tools = await self._list_all(client, server=self.config.name)
+            if name not in {tool.name for tool in tools}:
+                raise MCPClientError(f"MCP server {self.config.name!r} did not advertise tool {name!r}")
+            result = await client.call_tool(
+                name,
+                dict(arguments),
+                read_timeout_seconds=float(self.config.timeout_seconds),
+            )
+            return MCPToolResult(self.config.name, name, _dump_model(result))
+
+        async def run():
+            return await self._with_client(operation)
+
+        return _run_async(run)
 
     def descriptor(self) -> dict[str, Any]:
         return {
-            "schema_version": "ctf-mcp-client-v1",
+            "schema_version": "ctf-mcp-sdk-client-v2",
             "server": self.config.name,
             "transport": self.config.transport,
-            "protocol_version": self.config.protocol_version,
+            "protocol_mode": self._mode(),
             "allowed_tools": list(self.config.allowed_tools),
+            "sdk": "mcp-python-v2",
             "credential_values_persisted": False,
             "truth_authority": "none",
         }
 
 
-class StreamableHTTPMCPClient(_BaseClient):
-    def __init__(self, config: MCPServerConfig, *, environ: Mapping[str, str], opener: object | None = None):
-        super().__init__(config)
-        self.environ = environ
-        self.opener = opener
-
-    @staticmethod
-    def _parse_sse(body: bytes, request_id: int) -> dict[str, Any]:
-        text = body.decode("utf-8")
-        data_lines: list[str] = []
-        messages: list[dict[str, Any]] = []
-        for line in text.splitlines() + [""]:
-            if line.startswith("data:"):
-                data_lines.append(line[5:].lstrip())
-            elif not line and data_lines:
-                payload = "\n".join(data_lines)
-                data_lines.clear()
-                try:
-                    parsed = json.loads(payload)
-                except json.JSONDecodeError as exc:
-                    raise MCPClientError("MCP SSE data is not valid JSON") from exc
-                if isinstance(parsed, dict):
-                    messages.append(parsed)
-        for message in messages:
-            if message.get("id") == request_id:
-                return message
-        raise MCPClientError("MCP SSE response did not contain matching JSON-RPC response")
-
-    def _exchange(self, message: dict[str, Any], *, method: str, tool_name: str | None) -> dict[str, Any]:
-        if not self.config.endpoint:
-            raise MCPClientError("MCP HTTP endpoint is not configured")
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-            "MCP-Protocol-Version": self.config.protocol_version,
-            "Mcp-Method": method,
-        }
-        if tool_name:
-            headers["Mcp-Name"] = tool_name
-        if self.config.auth_env:
-            secret = self.environ.get(self.config.auth_env, "")
-            if not secret:
-                raise MCPClientError(f"MCP auth environment variable {self.config.auth_env} is not set")
-            headers["Authorization"] = f"{self.config.auth_scheme} {secret}".strip()
-        request = urllib.request.Request(
-            self.config.endpoint,
-            data=json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
-        transport = self.opener or urllib.request.build_opener()
-        try:
-            response = transport.open(request, timeout=float(self.config.timeout_seconds))
-            with response:
-                body = response.read(4_194_305)
-                content_type = str(response.headers.get("Content-Type", "")).lower()
-        except urllib.error.HTTPError as exc:
-            detail = exc.read(2048).decode("utf-8", errors="replace")
-            raise MCPClientError(f"MCP HTTP server returned {exc.code}: {detail}") from exc
-        except urllib.error.URLError as exc:
-            raise MCPClientError(f"MCP HTTP request failed: {exc.reason}") from exc
-        except OSError as exc:
-            raise MCPClientError(f"MCP HTTP request failed: {exc}") from exc
-        if len(body) > 4_194_304:
-            raise MCPClientError("MCP HTTP response exceeds byte limit")
-        request_id = int(message["id"])
-        if "text/event-stream" in content_type:
-            return self._parse_sse(body, request_id)
-        try:
-            parsed = json.loads(body.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise MCPClientError("MCP HTTP response is not UTF-8 JSON") from exc
-        if not isinstance(parsed, dict):
-            raise MCPClientError("MCP HTTP response must be one JSON-RPC object")
-        return parsed
-
-
-class StdioMCPClient(_BaseClient):
-    def __init__(
-        self,
-        config: MCPServerConfig,
-        *,
-        environ: Mapping[str, str],
-        runner=subprocess.run,
-    ):
-        super().__init__(config)
-        self.environ = environ
-        self.runner = runner
-
-    def _child_env(self) -> dict[str, str]:
-        child = {
-            "PATH": self.environ.get("PATH", os.environ.get("PATH", "/usr/bin:/bin")),
-            "LANG": self.environ.get("LANG", os.environ.get("LANG", "C.UTF-8")),
-        }
-        for name in self.config.pass_env_names:
-            if name in self.environ:
-                child[name] = self.environ[name]
-        return child
-
-    def _exchange(self, message: dict[str, Any], *, method: str, tool_name: str | None) -> dict[str, Any]:
-        wire = json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n"
-        try:
-            completed = self.runner(
-                list(self.config.command),
-                input=wire.encode("utf-8"),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=float(self.config.timeout_seconds),
-                check=False,
-                shell=False,
-                env=self._child_env(),
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise MCPClientError(f"MCP stdio server {self.config.name!r} timed out") from exc
-        except OSError as exc:
-            raise MCPClientError(f"cannot execute MCP stdio server {self.config.name!r}: {exc}") from exc
-        if completed.returncode != 0:
-            detail = completed.stderr[:2048].decode("utf-8", errors="replace")
-            raise MCPClientError(f"MCP stdio server {self.config.name!r} exited {completed.returncode}: {detail}")
-        if len(completed.stdout) > 4_194_304:
-            raise MCPClientError("MCP stdio response exceeds byte limit")
-        request_id = message["id"]
-        matches: list[dict[str, Any]] = []
-        for line in completed.stdout.decode("utf-8", errors="strict").splitlines():
-            try:
-                parsed = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise MCPClientError("MCP stdio stdout contained non-JSON protocol data") from exc
-            if not isinstance(parsed, dict):
-                raise MCPClientError("MCP stdio message must be a JSON object")
-            if parsed.get("id") == request_id:
-                matches.append(parsed)
-        if len(matches) != 1:
-            raise MCPClientError("MCP stdio server did not return exactly one matching response")
-        return matches[0]
-
-
 class MCPRegistry:
     """Harness-owned MCP routing with an explicit per-server tool allowlist."""
 
-    def __init__(self, config: HarnessConfiguration, clients: Mapping[str, _MCPClient]):
+    def __init__(self, config: HarnessConfiguration, clients: Mapping[str, MCPClientBackend]):
         self.config = config
         self.clients = dict(clients)
 
@@ -295,7 +251,7 @@ class MCPRegistry:
     def server_names(self) -> tuple[str, ...]:
         return tuple(sorted(self.clients))
 
-    def _client(self, server: str) -> _MCPClient:
+    def _client(self, server: str) -> MCPClientBackend:
         try:
             return self.clients[server]
         except KeyError as exc:
@@ -314,7 +270,7 @@ class MCPRegistry:
 
     def descriptor(self) -> dict[str, Any]:
         return {
-            "schema_version": "ctf-mcp-registry-v1",
+            "schema_version": "ctf-mcp-registry-v2",
             "servers": {name: self.clients[name].descriptor() for name in sorted(self.clients)},
             "remote_tool_metadata_trusted": False,
             "truth_authority": "none",
@@ -334,31 +290,27 @@ class MCPRegistry:
             ),
             ToolSpec(
                 name="mcp_call",
-                description="Call one explicitly allowlisted tool on a configured MCP server; result is an untrusted observation.",
+                description="Call one explicitly allowlisted MCP tool; result is an untrusted observation.",
                 handler=lambda server, tool, arguments=None: self.call_tool(server, tool, arguments or {}),
                 side_effect=SideEffect.EXTERNAL,
                 idempotent=False,
-                permission="auto",
+                permission="confirm",
                 failure_modes=["unknown_server", "tool_not_allowlisted", "transport_error", "remote_tool_error"],
-                provenance={"kind": "ctf_mcp_call", "truth_authority": "none"},
+                provenance={
+                    "kind": "ctf_mcp_call",
+                    "truth_authority": "none",
+                    "approval_policy": "operator_confirm_required",
+                },
             ),
         )
 
 
-def build_mcp_registry(
+def build_sdk_clients(
     config: HarnessConfiguration,
     *,
     environ: Mapping[str, str] | None = None,
-    http_opener: object | None = None,
-    stdio_runner=subprocess.run,
-) -> MCPRegistry:
+    client_factory: ClientFactory | None = None,
+) -> dict[str, MCPClientBackend]:
     env = dict(os.environ if environ is None else environ)
-    clients: dict[str, _MCPClient] = {}
-    for name, cfg in config.mcp_servers.items():
-        if cfg.transport == "streamable_http":
-            clients[name] = StreamableHTTPMCPClient(cfg, environ=env, opener=http_opener)
-        elif cfg.transport == "stdio":
-            clients[name] = StdioMCPClient(cfg, environ=env, runner=stdio_runner)
-        else:
-            raise MCPClientError(f"unsupported MCP transport {cfg.transport!r}")
-    return MCPRegistry(config, clients)
+    factory = client_factory or (lambda cfg, values: SDKMCPClient(cfg, environ=values))
+    return {name: factory(cfg, env) for name, cfg in config.mcp_servers.items()}
