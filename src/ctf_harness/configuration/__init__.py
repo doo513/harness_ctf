@@ -1,4 +1,10 @@
-from .models import HarnessConfiguration, ModelProviderConfig, ConfigurationError, load_configuration
+from .models import (
+    ConfigurationError,
+    HarnessConfiguration,
+    ModelProviderConfig,
+    SiteProfileConfig,
+    load_configuration,
+)
 from .model_gateway import ModelGateway, ModelGatewayError, build_default_model_gateway
 
 __all__ = [
@@ -7,6 +13,7 @@ __all__ = [
     "ModelGateway",
     "ModelGatewayError",
     "ModelProviderConfig",
+    "SiteProfileConfig",
     "build_default_model_gateway",
     "load_configuration",
 ]
