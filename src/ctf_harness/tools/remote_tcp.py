@@ -140,6 +140,29 @@ class RemoteTcpToolRuntime:
             finally:
                 self._sessions.pop(session_id, None)
 
+    def control_projection(self) -> dict[str, Any]:
+        """Return non-lossy ephemeral handles needed to continue live sessions.
+
+        Session IDs are kernel-generated control capabilities, not semantic
+        evidence. They must not depend on lossy observation previews because a
+        truncated preview can otherwise make a live stateful tool unusable on
+        the next Actor turn.
+        """
+        sessions = [
+            {"session_id": session_id, "state": "open"}
+            for session_id, session in sorted(self._sessions.items())
+            if not session.closed
+        ]
+        return {
+            "schema_version": "ctf-remote-tcp-control-v1",
+            "authority": "kernel_control",
+            "instruction_authority": "none",
+            "truth_authority": "none",
+            "ephemeral": True,
+            "resumable_after_process_loss": False,
+            "sessions": sessions,
+        }
+
     def descriptor(self) -> dict[str, Any]:
         return {
             "schema_version": "ctf-remote-tcp-tool-v1",
