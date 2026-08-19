@@ -1,0 +1,9 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+.venv/
+.build/
+.evidence/
+.env
+.env.*
+harness.toml
