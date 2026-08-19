@@ -20,10 +20,13 @@ class RemoteTcpToolRuntime:
     proof.
     """
 
-    def __init__(self, runner: RemoteTcpRunner):
+    def __init__(self, runner: RemoteTcpRunner, *, max_sessions: int = 8):
         if not isinstance(runner, RemoteTcpRunner):
             raise ValueError("remote TCP tool requires RemoteTcpRunner")
+        if not isinstance(max_sessions, int) or isinstance(max_sessions, bool) or max_sessions <= 0:
+            raise ValueError("remote TCP max_sessions must be a positive integer")
         self.runner = runner
+        self.max_sessions = max_sessions
         self._sessions: dict[str, RemoteTcpSession] = {}
         atexit.register(self.close_all)
 
@@ -48,9 +51,19 @@ class RemoteTcpToolRuntime:
             raise ValueError("remote TCP session is unknown or closed")
         return session
 
+    def _prune_closed(self) -> None:
+        for session_id, session in list(self._sessions.items()):
+            if session.closed:
+                self._sessions.pop(session_id, None)
+
     def _open(self) -> dict[str, Any]:
+        self._prune_closed()
+        if len(self._sessions) >= self.max_sessions:
+            raise RuntimeError(f"remote TCP active session limit reached: {self.max_sessions}")
         session = self.runner.open_session()
         session_id = uuid.uuid4().hex[:16]
+        while session_id in self._sessions:
+            session_id = uuid.uuid4().hex[:16]
         self._sessions[session_id] = session
         return {
             "operation": "open",
@@ -140,12 +153,38 @@ class RemoteTcpToolRuntime:
             finally:
                 self._sessions.pop(session_id, None)
 
+    def control_projection(self) -> dict[str, Any]:
+        """Return non-lossy ephemeral handles needed to continue live sessions.
+
+        Session IDs are Harness-generated control capabilities, not semantic
+        evidence. They must not depend on lossy observation previews because a
+        truncated preview can otherwise make a live stateful tool unusable on
+        the next Actor turn.
+        """
+        self._prune_closed()
+        sessions = [
+            {"session_id": session_id, "state": "open"}
+            for session_id, session in sorted(self._sessions.items())
+            if not session.closed
+        ]
+        return {
+            "schema_version": "ctf-remote-tcp-control-v1",
+            "authority": "kernel_control",
+            "instruction_authority": "none",
+            "truth_authority": "none",
+            "ephemeral": True,
+            "resumable_after_process_loss": False,
+            "max_sessions": self.max_sessions,
+            "sessions": sessions,
+        }
+
     def descriptor(self) -> dict[str, Any]:
         return {
-            "schema_version": "ctf-remote-tcp-tool-v1",
+            "schema_version": "ctf-remote-tcp-tool-v2",
             "runner": self.runner.describe(),
             "persistent_sessions": True,
             "session_resume": False,
+            "max_sessions": self.max_sessions,
             "endpoint_authority": "remote_tcp_runner_only",
             "truth_authority": "none",
         }
@@ -163,6 +202,7 @@ class RemoteTcpToolRuntime:
             permission="auto",
             failure_modes=[
                 "session_unknown",
+                "session_limit",
                 "endpoint_unavailable",
                 "send_limit",
                 "read_limit",
@@ -171,7 +211,7 @@ class RemoteTcpToolRuntime:
             ],
             provenance={
                 "kind": "ctf_remote_tcp_tool",
-                "schema": "ctf-remote-tcp-tool-v1",
+                "schema": "ctf-remote-tcp-tool-v2",
                 "endpoint_authority": "remote_tcp_runner_only",
                 "truth_authority": "none",
             },

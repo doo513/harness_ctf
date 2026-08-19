@@ -162,6 +162,19 @@ class VerifiedCTFProfile(CTFProfile):
             tools["remote_tcp"] = self.remote_tcp_tool_runtime.make_tool()
         return tools
 
+    def operational_control_projection(self) -> dict:
+        """Project live, kernel-generated continuation handles without semantic authority."""
+        projection = {
+            "schema_version": "ctf-operational-control-v1",
+            "authority": "kernel_control",
+            "instruction_authority": "none",
+            "truth_authority": "none",
+            "handles": {},
+        }
+        if self.remote_tcp_tool_runtime is not None:
+            projection["handles"]["remote_tcp"] = self.remote_tcp_tool_runtime.control_projection()
+        return projection
+
     def verifiers(self):
         return [
             *super().verifiers(),

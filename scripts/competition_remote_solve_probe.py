@@ -94,6 +94,21 @@ class Model:
                 records.append(record)
         return records
 
+    @staticmethod
+    def _visible_remote_session_ids(context: dict) -> list[str]:
+        operational = context.get("ctf", {}).get("operational_control", {})
+        handles = operational.get("handles", {}) if isinstance(operational, dict) else {}
+        remote = handles.get("remote_tcp", {}) if isinstance(handles, dict) else {}
+        sessions = remote.get("sessions", []) if isinstance(remote, dict) else []
+        result = []
+        for session in sessions if isinstance(sessions, list) else []:
+            if not isinstance(session, dict):
+                continue
+            session_id = session.get("session_id")
+            if isinstance(session_id, str) and session_id:
+                result.append(session_id)
+        return result
+
     def complete(self, *, system: str, user: str) -> str:
         self.calls += 1
         if self.calls == 1:
@@ -110,13 +125,18 @@ class Model:
             context = request.get("context", {})
             records = self._visible_remote_records(context)
             if self.session_id is None:
+                session_ids = self._visible_remote_session_ids(context)
+                if session_ids:
+                    self.session_id = session_ids[0]
+            if not self.session_id:
                 for record in records:
                     session_id = record.get("session_id")
                     if isinstance(session_id, str) and session_id:
-                        self.session_id = session_id
-                        break
-            if not self.session_id:
-                raise RuntimeError("remote session id was not projected into governed context")
+                        raise RuntimeError(
+                            "remote session id is only visible through lossy observation preview; "
+                            "operational control projection is missing"
+                        )
+                raise RuntimeError("remote session id was not projected into governed operational control context")
             if self.calls == 2:
                 decision = {
                     "kind": "tool",
