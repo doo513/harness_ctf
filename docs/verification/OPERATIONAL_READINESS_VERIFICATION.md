@@ -1,151 +1,84 @@
-# Operational Readiness Layer — Implementation Verification
+# Operational Readiness Layer — Final Verification
+
+Status: **PASS — OPERATIONAL READINESS IMPLEMENTED AND FULL REPOSITORY CI GREEN**
+
+Verification code commit: `e1a64902c39a05d6f954c74981467f63b4f80d85`
+
+Verification run: GitHub Actions `verify` run `32202024136`, job `95917655734`.
 
 ## Scope
 
-This change implements the operator-facing stack in dependency order without changing the Verified-State authority model:
+The operator-facing stack was implemented in dependency order without replacing the Verified-State authority model:
 
 1. Configuration & Model Gateway
 2. Site Access Logic
 3. Doctor
 4. MCP Logic
 5. Operator Interface
+6. Cross-stage structural/regression review
 
-The existing `SolveEngine`, `AgentCTFRuntime`, verifier path, proof model, and external completion oracle remain authoritative and are not replaced.
+Detailed stage evidence is retained under [`docs/verification/operational_readiness/`](operational_readiness/INDEX.md).
 
-## 1. Configuration & Model Gateway
+## Final architecture
 
-Implemented strict TOML profiles for models, sites, and MCP servers. Raw secret fields are rejected; profiles reference environment/keyring/session locations instead.
+```text
+Operator CLI / interactive shell / future TUI
+                |
+        OperatorService
+        /      |      \
+ ModelGateway SiteGateway MCPRegistry
+      |           |        |
+CTFLLMController CTFd   official MCP SDK
+      |
+existing AgentCTFRuntime / SolveEngine
+      |
+Verifier + Proof + external completion oracle
+```
 
-Model providers:
-- OpenAI Responses API transport
-- Anthropic Messages API transport
-- Gemini generateContent transport
-- Existing external-process ModelAdapter
+The new gateways/services have no Fact, semantic-verification, proof-promotion, or completion authority.
 
-The gateway only builds ModelAdapters. Provider output must decode to the existing Decision `kind/payload` envelope. Provider usage metadata is retained as non-authoritative telemetry where available.
+## Stage results
 
-Hardening added during review:
-- custom model base URLs must be absolute HTTP(S), contain no userinfo/query/fragment, and non-loopback plaintext HTTP is rejected
-- redirect following is disabled for credentialed provider requests
-- provider-specific configuration confusion fails closed
-- provider error text is redacted before surfacing
-- OpenAI Responses explicitly requests `store=false`
-- `max_tokens` is documented as a per-request output cap only
+### 1. Configuration & Model Gateway — PASS
 
-Verification coverage written:
-- inline-secret rejection
-- active profile override
-- missing credential fail-closed
-- provider response normalization
-- secret exclusion from descriptors
-- explicit unsupported-provider rejection
-- custom base URL and provider-shape policy
+Strict TOML profiles, environment-based secret references, OpenAI/Anthropic/Gemini/external-process adapters, provider registry, endpoint hardening, output bounds, error redaction, and non-authoritative usage telemetry were implemented and directly tested.
 
-## 2. Site Access Logic
+### 2. Site Access Logic — PASS
 
-Implemented a configuration-driven `SiteAccessGateway` over the existing `CompetitionAdapter` boundary. The default provider is CTFd and reuses the existing same-origin URL checks and transient credential resolver.
+A configuration-driven `SiteAccessGateway` reuses the existing `CompetitionAdapter`/CTFd boundary and transient credential resolver. Submission is denied by default and requires explicit site-policy enablement.
 
-Flag submission is disabled unless `allow_submit=true` is explicitly configured. Site/platform data remains snapshot/observation data and does not become Harness truth.
+### 3. Doctor — PASS
 
-Verification coverage written:
-- inline site-secret rejection
-- transient environment credential resolution
-- CTFd adapter reuse
-- submission disabled by default
-- explicit submission enablement
+A read-only readiness diagnostic checks model/site/MCP/local-tool configuration and performs no mutation, install, paid call, submission, MCP tool call, or truth-state write.
 
-## 3. Doctor
+### 4. MCP Logic — PASS
 
-Implemented a read-only readiness checker and CLI probe.
+The initial custom MCP wire implementation was removed during review. The final design uses the official MCP Python SDK v2 for protocol/transports while the Harness owns allowlisting, secret scoping, trust classification, and operator approval. Agent-driven remote MCP calls require confirmation and return untrusted observations.
 
-Checks include:
-- active model provider/profile and required credential/command
-- active site provider/profile and credential reference
-- common local analysis commands
-- MCP mode, transport, auth environment, and tool allowlist
+### 5. Operator Interface — PASS
 
-Doctor performs no installation, configuration mutation, paid model call, flag submission, MCP tool call, or truth-state write.
+`OperatorService` provides the reusable application boundary plus JSON CLI/interactive shell. It binds configured models to the existing CTF controller, exposes competition/MCP operations, safely downloads challenge artifacts, and delegates explicit submission through site policy without creating a parallel solve/truth path.
 
-## 4. MCP Logic
+### 6. Integration review — PASS
 
-### Final design
+A pre-existing stateful Remote TCP continuity defect was exposed by the regression gate: the continuation `session_id` could be lost through bounded observation preview projection. It was corrected by introducing a bounded, non-lossy, ephemeral `kernel_control` continuation-handle projection with no instruction/truth authority and by bounding active sessions. The controlled competition remote solve probe now passes end-to-end.
 
-The first implementation attempted to own MCP JSON-RPC/stdio/HTTP behavior directly. Structural review rejected that direction because it would make the Harness responsible for tracking protocol-version details that belong to the MCP implementation layer.
+## Full regression gate
 
-The custom wire implementation was replaced by a thin adapter over the official MCP Python SDK v2.
+GitHub Actions run `32202024136` completed successfully:
 
-Responsibility split:
+- Base Harness pytest: `220 passed, 7 skipped`;
+- CTF Harness pytest: `235 passed`;
+- Base invariant probes: PASS;
+- Agent foundation / SolveEngine / AnalysisSandbox: PASS;
+- Pwn operational and semantic/proof/recovery probes: PASS;
+- competition remote TCP SolveEngine probe: PASS;
+- QEMU AArch64 and remote TCP runner probes: PASS;
+- Crypto/Reverse controlled verticals: PASS;
+- evaluation arm/integrity/corpus/executor/runtime probes: PASS.
 
-**Official MCP SDK owns**
-- protocol negotiation / explicit protocol mode
-- stdio process transport
-- Streamable HTTP transport
-- pagination/result parsing and protocol validation
-- modern/legacy request semantics
-- multi-round input-required tool interactions
+The competition remote probe specifically produced `all_passed=true`, `completed=true`, `model_calls=5`, `tool_calls=4`, `remote_tcp_bound=true`, `general_internet=false`, with `completion_authority=external_oracle_only`.
 
-**Harness owns**
-- configured server registry
-- non-secret configuration and explicit secret forwarding
-- per-server `allowed_tools`
-- rejection of non-allowlisted calls
-- operator approval for agent-driven `mcp_call`
-- classification of remote metadata/results as untrusted observations
+## Evidence boundary / non-claims
 
-Policy:
-- remote tool metadata is untrusted
-- per-server `allowed_tools` filters visible/callable tools
-- agent-visible surface is only `mcp_list` and `mcp_call`
-- `mcp_call` requires Base Harness operator confirmation
-- stdio only forwards explicitly configured extra variables; SDK safe-default environment behavior remains underneath
-- HTTP auth is supplied through a dedicated SDK/httpx2 client with redirects disabled
-- MCP results are `untrusted_observation` with no truth/completion authority
-- protocol mode may be `auto`, `legacy`, or an SDK-supported explicit modern version; the Harness no longer pretends to implement protocol compatibility itself
-
-Verification coverage written:
-- inline-secret rejection
-- allowlist filtering
-- denied non-allowlisted call
-- SDK client descriptors exclude secret values
-- protocol-mode policy is delegated to the SDK
-- agent-visible remote tool calls require confirmation
-
-## 5. Operator Interface
-
-Implemented `OperatorService` as the application boundary for terminal/TUI/GUI work plus a JSON CLI and interactive shell.
-
-Available operations:
-- status / doctor
-- list/read competition challenges
-- download challenge artifacts into the standard workspace projection
-- list MCP servers/tools and explicit human MCP calls
-- explicit flag submission through the site policy gate
-- construct the existing `CTFLLMController` from the configured Model Gateway
-
-Challenge downloads validate all artifact names before persistence, reject overwrite/duplicates, and roll back newly-created files on write failure. Downloading does not perform verified artifact admission.
-
-## Structural review findings fixed during implementation
-
-1. Replaced a dataclass `mappingproxy` default with `default_factory` for Python 3.11-safe construction.
-2. Removed the Harness-owned MCP wire implementation and moved protocol/transport responsibility to the official SDK.
-3. Changed agent-driven MCP remote calls from automatic permission to operator confirmation because remote MCP side effects are not intrinsically known by the Harness.
-4. Made operator challenge downloads transactional rather than leaving partially-written challenge workspaces after a later failure.
-5. Hardened model custom endpoints, redirect handling, error redaction, and provider-specific configuration validation.
-6. Kept Model Gateway, Site Access, MCP, Doctor, and Operator layers outside verifier/truth/completion authority.
-
-## Deliberate non-claims / remaining external validation
-
-- No real paid model credential is committed or exercised by deterministic tests.
-- Real provider/API behavior still requires live credentialed smoke tests.
-- Real MCP servers still require live transport/interoperability smoke tests.
-- `SolveBudget.max_tokens` remains unsupported by `SolveEngine` as a whole-run enforced budget; provider `max_tokens` is only a per-request output cap.
-- MCP connections are currently opened per SDK operation. Persistent connection lifecycle/session reuse is intentionally deferred until a real stateful/latency-sensitive MCP use case demonstrates the need.
-- The current presentation layer is a dependency-free CLI/interactive shell over `OperatorService`; a richer full-screen TUI can reuse the same service without reimplementing integrations.
-- Dynamic competition instance plugins remain separate `InstanceProvider` extensions.
-- Domain-specific solve effectiveness is not claimed by this operational-readiness work.
-
-## Regression gate
-
-The repository CI remains the release gate: Base Harness regression/invariant probes, CTF pytest regression, controlled SolveEngine, sandbox, competition, Pwn semantic/proof/recovery, cross-domain, QEMU, and evaluation probes must continue to pass.
-
-At the time this document was updated, deterministic test cases had been added but a successful full repository CI run had not yet been observed for this branch. This document therefore records implementation/review status, not a release-ready PASS claim.
+This is an **operational integration and regression PASS**. Deterministic CI does not claim a live paid production-model run, fresh private-corpus solve-rate improvement, or real third-party MCP interoperability. The evaluation probes intentionally continue to distinguish those empirical questions from implementation correctness.
